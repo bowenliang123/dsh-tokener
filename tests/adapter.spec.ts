@@ -13,7 +13,7 @@ import { LocalCredentialProvider } from '@deepseek-ai/dsh-credentials-local'
 import { FileSettingsProvider } from '@deepseek-ai/dsh-settings-file'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import * as LlmTokener from '../src/index.ts'
-import { PUBLIC_BASE_URL, TokenerAdapter, resolveAdapterOptions } from '../src/index.ts'
+import { PUBLIC_BASE_URL, TokenerAdapter, fetchModelEntries, resolveAdapterOptions } from '../src/index.ts'
 import { PROVIDER, assemble } from './assemble.ts'
 import { StaticAttachmentStore } from './store.ts'
 import { closeMockServers, mockServer, sse, textEvents } from './mock-server.ts'
@@ -361,16 +361,17 @@ describe('dynamic configuration', () => {
 })
 
 describe('models and discovery', () => {
-  it('lists live models with catalog metadata merged', async () => {
-    const server = await mockServer([], [
-      { id: 'glm-5.2' },
-      { id: 'deepseek-v4-flash', max_input_tokens: 1_000_000, max_output_tokens: 393_216 },
-      { mode: 'chat' },
-    ])
-    const ctx = await harness(server.url, {
-      models: [{ id: 'glm-5.2', name: 'GLM-5.2', description: 'Flagship', inputModalities: ['text', 'image'] }],
+  it('advertises exactly the configured catalog, without any network call', async () => {
+    // The selector contract on every adapter: the stored profile list IS what
+    // pickers offer. Even an unreachable endpoint must not break it.
+    const adapter = adapterOf({
+      baseURL: 'http://127.0.0.1:1',
+      models: [
+        { id: 'glm-5.2', name: 'GLM-5.2', description: 'Flagship', inputModalities: ['text', 'image'] },
+        { id: 'deepseek-v4-flash' },
+      ],
     })
-    await expect(ctx.llm.listModels(PROVIDER)).resolves.toEqual([
+    await expect(adapter.listModels(PROVIDER)).resolves.toEqual([
       { provider: PROVIDER, id: 'glm-5.2', name: 'GLM-5.2', description: 'Flagship', inputModalities: ['text', 'image'] },
       { provider: PROVIDER, id: 'deepseek-v4-flash', name: 'deepseek-v4-flash', inputModalities: ['text'] },
     ])
@@ -410,17 +411,24 @@ describe('models and discovery', () => {
   })
 
   it('maps model-list transport and shape failures to typed errors', async () => {
-    const unreachable = adapterOf({ baseURL: 'http://127.0.0.1:1' })
-    await expect(unreachable.listModels(PROVIDER)).rejects.toMatchObject({ code: 'TRANSPORT' })
+    const unreachable = 'http://127.0.0.1:1'
+    await expect(fetchModelEntries(unreachable, 'k')).rejects.toMatchObject({ code: 'TRANSPORT' })
 
     const failing = await mockServer([], [], { status: 500, body: 'boom' })
-    await expect(adapterOf({ baseURL: failing.url }).listModels(PROVIDER)).rejects.toMatchObject({ code: 'SERVER' })
+    await expect(fetchModelEntries(failing.url, 'k')).rejects.toMatchObject({ code: 'SERVER' })
 
     const originalFetch = globalThis.fetch
     globalThis.fetch = async () => new Response('{not-json', { status: 200, headers: { 'content-type': 'application/json' } })
     try {
-      await expect(adapterOf({ baseURL: 'http://127.0.0.1:1' }).listModels(PROVIDER))
-        .rejects.toMatchObject({ code: 'MALFORMED_RESPONSE' })
+      await expect(fetchModelEntries(unreachable, 'k')).rejects.toMatchObject({ code: 'MALFORMED_RESPONSE' })
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+    globalThis.fetch = async () => new Response('{"nope":true}', { status: 200, headers: { 'content-type': 'application/json' } })
+    try {
+      // A valid listing without a data array reads as "nothing advertised";
+      // catalog membership stays advisory, so this is not an error.
+      await expect(fetchModelEntries(unreachable, 'k')).resolves.toEqual([])
     } finally {
       globalThis.fetch = originalFetch
     }
@@ -430,9 +438,8 @@ describe('models and discovery', () => {
     const originalFetch = globalThis.fetch
     globalThis.fetch = async () => new Response(JSON.stringify({ data: [null, 42, 'str', { id: 'ok' }, { mode: 'chat' }] }), { status: 200 })
     try {
-      await expect(adapterOf({ baseURL: 'http://127.0.0.1:1' }).listModels(PROVIDER)).resolves.toEqual([
-        { provider: PROVIDER, id: 'ok', name: 'ok', inputModalities: ['text'] },
-      ])
+      const entries = await fetchModelEntries('http://127.0.0.1:1', 'k')
+      expect(entries.map(entry => entry.id)).toEqual(['ok'])
     } finally {
       globalThis.fetch = originalFetch
     }

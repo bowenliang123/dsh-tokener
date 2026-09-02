@@ -246,20 +246,19 @@ export class TokenerAdapter extends LlmAdapter {
     return this.config.options().retryPolicy
   }
 
-  override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+  override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    // The configured catalog IS the selector contract, as on every other
+    // adapter: what the profile lists is what pickers offer. The gateway's
+    // live listing is an explicit configuration-time helper (model
+    // discovery), never an implicit widening of the picker.
     const connection = this.config.options()
-    const apiKey = await this.config.resolveApiKey(connection)
-    const entries = await fetchModelEntries(connection.baseURL, apiKey)
-    return entries.map((entry) => {
-      const configured = connection.models.find(model => model.id === entry.id)
-      return {
-        provider,
-        id: entry.id,
-        name: configured?.name ?? entry.id,
-        ...configured?.description === undefined ? {} : { description: configured.description },
-        inputModalities: configured?.inputModalities ?? TEXT_MODALITIES,
-      }
-    })
+    return Promise.resolve(connection.models.map(model => ({
+      provider,
+      id: model.id,
+      name: model.name ?? model.id,
+      ...model.description === undefined ? {} : { description: model.description },
+      inputModalities: model.inputModalities ?? TEXT_MODALITIES,
+    })))
   }
 
   override resolveModel(
