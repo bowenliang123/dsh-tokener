@@ -63,16 +63,19 @@ const NS = 'llm-tokener'
 const DEFAULT_API_KEY_ENV = 'TOKENER_API_KEY'
 /** The single provider route this plugin owns. */
 const PROVIDER = 'tokener'
+/** The namespace sub-key the provider profile lives under (pi-ai's `providers` analog). */
+const PROFILES_KEY = 'profiles'
 
 /**
- * Plugin config, validated by the same-named schemastery schema and doubling
- * as the `llm-tokener` settings-section shape. Every field is optional in
- * yml: a missing API key resolves through {@link Config.apiKeyEnv} at each
- * request (a request without any key fails with `MISSING_CREDENTIAL`, not at
- * plugin load), and model capacities fall back to the route defaults or live
- * discovery.
+ * One provider profile: the `profiles.tokener` subtree of the settings
+ * section, addressed by the Models page as `['profiles', 'tokener']` so the
+ * route is addable, editable, and deletable like any adapter-declared route.
+ * Every field is optional: a missing API key resolves through
+ * {@link TokenerProfile.apiKeyEnv} at each request (a request without any key
+ * fails with `MISSING_CREDENTIAL`, not at plugin load), and model capacities
+ * fall back to the route defaults or live discovery.
  */
-export interface Config {
+export interface TokenerProfile {
   /** Credential reference (environment-variable name) resolved per request; defaults to `TOKENER_API_KEY`. */
   apiKeyEnv?: string
   /** Endpoint base; falls back to the public Tokener API. */
@@ -97,16 +100,28 @@ export interface Config {
   retryPolicy?: RetryPolicyConfig
 }
 
+/**
+ * Plugin config, validated by the same-named schemastery schema and doubling
+ * as the `llm-tokener` settings-section shape. The profile lives under
+ * `profiles.tokener` so the web Models page can address, edit, and delete it
+ * as one route subtree.
+ */
+export interface Config {
+  profiles?: { tokener?: TokenerProfile }
+}
+
 const catalogModel: z<TokenerCatalogModel> = z.object({
   id: z.string().required(),
   name: z.string(),
   description: z.string(),
   contextWindow: z.number().step(1).min(1),
   maxTokens: z.number().step(1).min(1),
-  inputModalities: z.array(z.union(MODEL_MODALITIES)).min(1),
+  // The Models page's model rows carry this field as an explicit empty array
+  // (its "unspecified" spelling); empty normalizes to text-only below.
+  inputModalities: z.array(z.union(MODEL_MODALITIES)),
 })
 
-export const Config: z<Config> = z.object({
+const profileSchema: z<TokenerProfile> = z.object({
   apiKeyEnv: z.string().role('credential-ref').default(DEFAULT_API_KEY_ENV),
   baseURL: z.string(),
   reasoningEffort: z.union(['off', 'extended']),
@@ -120,6 +135,10 @@ export const Config: z<Config> = z.object({
   retryPolicy: RetryPolicySchema,
 })
 
+export const Config: z<Config> = z.object({
+  profiles: z.dict(profileSchema, z.string()).default({}),
+})
+
 /**
  * The one explicit resolve step from raw config to validated connection
  * facts. Programmatic construction may bypass Schemastery normalization, so
@@ -128,28 +147,28 @@ export const Config: z<Config> = z.object({
  * @param config - raw plugin config or resolved settings snapshot.
  * @returns validated connection facts plus the credential reference.
  */
-export function resolveAdapterOptions(config: Config): TokenerConnectionOptions {
-  if (config.baseURL !== undefined && config.baseURL.length === 0) {
+export function resolveAdapterOptions(profile: TokenerProfile): TokenerConnectionOptions {
+  if (profile.baseURL !== undefined && profile.baseURL.length === 0) {
     throw new Error('llm-tokener: baseURL must be a non-empty string')
   }
-  if (config.maxTokens !== undefined
-    && (!Number.isSafeInteger(config.maxTokens) || config.maxTokens <= 0)) {
+  if (profile.maxTokens !== undefined
+    && (!Number.isSafeInteger(profile.maxTokens) || profile.maxTokens <= 0)) {
     throw new Error('llm-tokener: maxTokens must be a positive safe integer')
   }
-  if (config.defaultContextWindow !== undefined
-    && (!Number.isInteger(config.defaultContextWindow) || config.defaultContextWindow <= 0)) {
+  if (profile.defaultContextWindow !== undefined
+    && (!Number.isInteger(profile.defaultContextWindow) || profile.defaultContextWindow <= 0)) {
     throw new Error('llm-tokener: defaultContextWindow must be a positive integer')
   }
-  const thinkingBudgetTokens = config.thinkingBudgetTokens
+  const thinkingBudgetTokens = profile.thinkingBudgetTokens
   if (thinkingBudgetTokens !== undefined
     && (!Number.isSafeInteger(thinkingBudgetTokens) || thinkingBudgetTokens < MIN_THINKING_BUDGET_TOKENS)) {
     throw new Error(`llm-tokener: thinkingBudgetTokens must be a safe integer no lower than ${MIN_THINKING_BUDGET_TOKENS}`)
   }
   if (thinkingBudgetTokens !== undefined
-    && (config.maxTokens ?? DEFAULT_MAX_TOKENS) <= thinkingBudgetTokens) {
+    && (profile.maxTokens ?? DEFAULT_MAX_TOKENS) <= thinkingBudgetTokens) {
     throw new Error('llm-tokener: thinkingBudgetTokens must stay below maxTokens')
   }
-  const streamIdleTimeoutMs = config.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS
+  const streamIdleTimeoutMs = profile.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS
   if (!Number.isFinite(streamIdleTimeoutMs)
     || streamIdleTimeoutMs <= 0
     || streamIdleTimeoutMs > MAX_TIMER_DELAY_MS) {
@@ -157,16 +176,16 @@ export function resolveAdapterOptions(config: Config): TokenerConnectionOptions 
       `llm-tokener: streamIdleTimeoutMs must be a positive finite number no greater than ${MAX_TIMER_DELAY_MS}`,
     )
   }
-  const imageMaxPixels = config.imageMaxPixels ?? DEFAULT_IMAGE_MAX_PIXELS
+  const imageMaxPixels = profile.imageMaxPixels ?? DEFAULT_IMAGE_MAX_PIXELS
   if (!Number.isSafeInteger(imageMaxPixels) || imageMaxPixels <= 0) {
     throw new Error('llm-tokener: imageMaxPixels must be a positive safe integer')
   }
-  const imageMaxBytes = config.imageMaxBytes ?? DEFAULT_IMAGE_MAX_BYTES
+  const imageMaxBytes = profile.imageMaxBytes ?? DEFAULT_IMAGE_MAX_BYTES
   if (!Number.isSafeInteger(imageMaxBytes) || imageMaxBytes <= 0) {
     throw new Error('llm-tokener: imageMaxBytes must be a positive safe integer')
   }
   const seen = new Set<string>()
-  for (const model of config.models ?? []) {
+  for (const model of profile.models ?? []) {
     if (model.id.length === 0) throw new Error('llm-tokener: catalog model ids must be non-empty')
     if (model.name !== undefined && model.name.length === 0) {
       throw new Error(`llm-tokener: catalog model "${model.id}" has an empty name`)
@@ -180,10 +199,7 @@ export function resolveAdapterOptions(config: Config): TokenerConnectionOptions 
       throw new Error(`llm-tokener: catalog model "${model.id}" maxTokens must be a positive integer`)
     }
     const inputModalities = model.inputModalities
-    if (inputModalities !== undefined) {
-      if (inputModalities.length === 0) {
-        throw new Error(`llm-tokener: catalog model "${model.id}" inputModalities must not be empty`)
-      }
+    if (inputModalities !== undefined && inputModalities.length > 0) {
       if (inputModalities.some(modality => !MODEL_MODALITIES.includes(modality))) {
         throw new Error(
           `llm-tokener: catalog model "${model.id}" inputModalities must contain only "text" and "image"`,
@@ -197,26 +213,32 @@ export function resolveAdapterOptions(config: Config): TokenerConnectionOptions 
     seen.add(model.id)
   }
   return {
-    apiKeyEnv: credentialRef(config.apiKeyEnv ?? DEFAULT_API_KEY_ENV),
-    baseURL: config.baseURL ?? PUBLIC_BASE_URL,
+    apiKeyEnv: credentialRef(profile.apiKeyEnv ?? DEFAULT_API_KEY_ENV),
+    baseURL: profile.baseURL ?? PUBLIC_BASE_URL,
     defaults: {
-      reasoningEffort: config.reasoningEffort,
+      reasoningEffort: profile.reasoningEffort,
       thinkingBudgetTokens,
     },
-    maxTokens: config.maxTokens ?? DEFAULT_MAX_TOKENS,
-    defaultContextWindow: config.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW,
-    models: (config.models ?? []).map(model => ({
-      id: model.id,
-      ...model.name === undefined ? {} : { name: model.name },
-      ...model.description === undefined ? {} : { description: model.description },
-      ...model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow },
-      ...model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens },
-      ...model.inputModalities === undefined ? {} : { inputModalities: [...model.inputModalities] },
-    })),
+    maxTokens: profile.maxTokens ?? DEFAULT_MAX_TOKENS,
+    defaultContextWindow: profile.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW,
+    models: (profile.models ?? []).map((model) => {
+      // An explicit empty modality array (the Models page's "unspecified")
+      // detaches as text-only, the same answer an absent field gets.
+      const modalities = model.inputModalities
+      const usable = modalities !== undefined && modalities.length > 0
+      return {
+        id: model.id,
+        ...model.name === undefined ? {} : { name: model.name },
+        ...model.description === undefined ? {} : { description: model.description },
+        ...model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow },
+        ...model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens },
+        ...!usable ? {} : { inputModalities: [...modalities] },
+      }
+    }),
     streamIdleTimeoutMs,
     imageMaxPixels,
     imageMaxBytes,
-    retryPolicy: resolveRetryPolicy(config.retryPolicy, 'llm-tokener: retryPolicy'),
+    retryPolicy: resolveRetryPolicy(profile.retryPolicy, 'llm-tokener: retryPolicy'),
   }
 }
 
@@ -229,7 +251,7 @@ export function apply(ctx: Context, config: Config): void {
     const raw = current()
     if (raw === lastRaw && lastGood !== undefined) return lastGood
     try {
-      const next = resolveAdapterOptions(raw)
+      const next = resolveAdapterOptions(raw.profiles?.tokener ?? {})
       lastRaw = raw
       lastGood = next
       return next
@@ -275,7 +297,7 @@ export function apply(ctx: Context, config: Config): void {
     resolveAttachments: () => ctx.get('attachments'),
   })
   ctx.llm.registerConfigurableProviders([
-    { provider: PROVIDER, displayName: 'Tokener', settingsNs: NS, settingsPath: [] },
+    { provider: PROVIDER, displayName: 'Tokener', settingsNs: NS, settingsPath: [PROFILES_KEY, PROVIDER] },
   ])
   // Route effects bind to this apply fiber via the stable `ctx` reference,
   // even when a swap runs inside the scoped settings callback below.

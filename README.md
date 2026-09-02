@@ -71,14 +71,16 @@ Catalog entries accept `id`, `name`, `description`, `contextWindow`, `maxTokens`
 - id: llm-tokener
   name: dsh-tokener
   config:
-    models:
-      - id: deepseek-v4-flash
-        name: DeepSeek V4 Flash
-        contextWindow: 1000000
-        maxTokens: 393216
-      - id: gpt-5.6-sol
-        contextWindow: 922000
-        inputModalities: [text, image]
+    profiles:
+      tokener:
+        models:
+          - id: deepseek-v4-flash
+            name: DeepSeek V4 Flash
+            contextWindow: 1000000
+            maxTokens: 393216
+          - id: gpt-5.6-sol
+            contextWindow: 922000
+            inputModalities: [text, image]
 ```
 
 Everything above is also a live settings section (`llm-tokener`): change it in `$DSH_HOME/settings.yaml` or the web UI and the next request picks it up.

@@ -3,12 +3,18 @@ import { Config, PUBLIC_BASE_URL, resolveAdapterOptions } from '../src/index.ts'
 import { DEFAULT_MAX_TOKENS } from '../src/adapter.ts'
 
 describe('Config schema', () => {
-  it('resolves an absent config to defaults, leaving unset optionals undefined', () => {
+  it('resolves an absent config to an empty profile dict', () => {
     const parsed = Config(undefined) as Record<string, unknown>
-    expect(parsed.apiKeyEnv).toBe('TOKENER_API_KEY')
-    expect(parsed.baseURL).toBeUndefined()
-    expect(parsed.maxTokens).toBe(DEFAULT_MAX_TOKENS)
-    expect(parsed.models).toEqual([])
+    expect(parsed.profiles).toEqual({})
+  })
+
+  it('resolves a stored profile with its schema defaults', () => {
+    const parsed = Config({ profiles: { tokener: {} } }) as Record<string, unknown>
+    const profile = (parsed.profiles as Record<string, Record<string, unknown>>).tokener
+    expect(profile.apiKeyEnv).toBe('TOKENER_API_KEY')
+    expect(profile.baseURL).toBeUndefined()
+    expect(profile.maxTokens).toBe(DEFAULT_MAX_TOKENS)
+    expect(profile.models).toEqual([])
   })
 })
 
@@ -40,6 +46,14 @@ describe('resolveAdapterOptions', () => {
     }])
   })
 
+  it('normalizes an explicit empty modality array to the detached text-only default', () => {
+    // The Models page's model rows store "unspecified" as []; the catalog
+    // detaches it unnamed, and resolution answers text-only downstream.
+    const resolved = resolveAdapterOptions({ models: [{ id: 'm', inputModalities: [] }] })
+    expect(resolved.models[0]).toMatchObject({ id: 'm' })
+    expect(resolved.models[0].inputModalities).toBeUndefined()
+  })
+
   it.each([
     [{ baseURL: '' }, 'baseURL'],
     [{ maxTokens: 0 }, 'maxTokens'],
@@ -55,7 +69,6 @@ describe('resolveAdapterOptions', () => {
     [{ models: [{ id: 'm', name: '' }] }, 'empty name'],
     [{ models: [{ id: 'm', contextWindow: 0 }] }, 'contextWindow'],
     [{ models: [{ id: 'm', maxTokens: -1 }] }, 'maxTokens'],
-    [{ models: [{ id: 'm', inputModalities: [] }] }, 'inputModalities must not be empty'],
     [{ models: [{ id: 'm', inputModalities: ['video' as never] }] }, 'only "text" and "image"'],
     [{ models: [{ id: 'm', inputModalities: ['text', 'text'] }] }, 'duplicates'],
     [{ models: [{ id: 'm' }, { id: 'm' }] }, 'duplicate catalog model'],

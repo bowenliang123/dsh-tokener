@@ -42,17 +42,17 @@ const KEY_REF = credentialRef('TOKENER_API_KEY')
  * llm-tokener over one temp harness home. `watch: false` keeps every change
  * flowing through the in-process write path, which is deterministic.
  */
-async function harness(baseURL: string, config: object = {}): Promise<Context> {
+async function harness(baseURL: string, profile: object = {}): Promise<Context> {
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(FileSettingsProvider, { path: join(testHome, 'settings.yaml'), watch: false })
   await ctx.plugin(LocalCredentialProvider, { path: join(testHome, '.credentials.yaml'), watch: false })
-  await ctx.plugin(LlmTokener, { baseURL, ...config })
+  await ctx.plugin(LlmTokener, { profiles: { tokener: { baseURL, ...profile } } })
   return ctx
 }
 
 /** Direct adapter over the plugin's real resolve step, with a static key and optional attachment seam. */
-function adapterOf(config: LlmTokener.Config = {}, attachments?: AttachmentStore): TokenerAdapter {
+function adapterOf(config: LlmTokener.TokenerProfile = {}, attachments?: AttachmentStore): TokenerAdapter {
   const resolved = resolveAdapterOptions(config)
   return new TokenerAdapter({
     options: () => resolved,
@@ -115,7 +115,7 @@ describe('plugin registration', () => {
       provider: PROVIDER,
       displayName: 'Tokener',
       settingsNs: NS,
-      settingsPath: [],
+      settingsPath: ['profiles', PROVIDER],
     }])
     await expect(ctx.llm.resolveModelInfo(PROVIDER, 'glm-5.2')).resolves.toMatchObject({
       provider: PROVIDER,
@@ -290,7 +290,7 @@ describe('dynamic configuration', () => {
     await assemble(ctx, { model: 'glm-5.2', messages: [user('hi')] })
     expect(serverA.requests).toHaveLength(1)
 
-    await ctx.settings.update(NS, { baseURL: serverB.url })
+    await ctx.settings.update(NS, { profiles: { tokener: { baseURL: serverB.url } } })
     await assemble(ctx, { model: 'glm-5.2', messages: [user('hi')] })
     expect(serverA.requests).toHaveLength(1)
     expect(serverB.requests).toHaveLength(1)
@@ -303,7 +303,7 @@ describe('dynamic configuration', () => {
     // The settings schema accepts both bounds, but the resolve step refuses a
     // thinking budget at or above the output cap: the snapshot fails where it
     // is read, the previous facts keep serving, and the failure is logged.
-    await ctx.settings.update(NS, { maxTokens: 4_096, thinkingBudgetTokens: 4_096 })
+    await ctx.settings.update(NS, { profiles: { tokener: { maxTokens: 4_096, thinkingBudgetTokens: 4_096 } } })
     await assemble(ctx, { model: 'glm-5.2', messages: [user('hi')] })
     expect(serverA.requests).toHaveLength(1)
 
@@ -312,10 +312,32 @@ describe('dynamic configuration', () => {
     expect(serverA.requests).toHaveLength(2)
   })
 
+  it('lets the page delete a stored profile, falling back to composition defaults', async () => {
+    // Production mounts this plugin with no composition config, so the base
+    // layer never pins the profile: a page Delete truly removes it.
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(FileSettingsProvider, { path: join(testHome, 'settings.yaml'), watch: false })
+    await ctx.plugin(LocalCredentialProvider, { path: join(testHome, '.credentials.yaml'), watch: false })
+    await ctx.plugin(LlmTokener, {})
+    expect(ctx.llm.listProviders()).toEqual([{ id: PROVIDER, name: 'Tokener' }])
+
+    // Add-provider flow: the page stores the profile in the user layer.
+    await ctx.settings.update(NS, { profiles: { tokener: { baseURL: 'http://127.0.0.1:1' } } })
+    expect((ctx.settings.get(NS) as { profiles?: { tokener?: unknown } }).profiles?.tokener).toBeDefined()
+
+    // The page's Delete: unset the profile subtree; the route stays live.
+    await ctx.settings.mutate(NS, [{ op: 'unset', path: ['profiles', PROVIDER] }])
+    expect((ctx.settings.get(NS) as { profiles?: { tokener?: unknown } }).profiles?.tokener).toBeUndefined()
+    expect(ctx.llm.listProviders()).toEqual([{ id: PROVIDER, name: 'Tokener' }])
+  })
+
   it('unregisters the namespace watch when the plugin fiber disposes', async () => {
     const server = await mockServer([{ kind: 'sse', events: textEvents }])
     const ctx = await harness(server.url)
-    expect(ctx.settings.get(NS)).toMatchObject({ baseURL: server.url })
+    expect(ctx.settings.get(NS)).toMatchObject({
+      profiles: { tokener: { baseURL: server.url } },
+    })
     // The watch disposer is bound to this plugin's fiber; the service detaches
     // with the same dispose, so the observable contract is a clean teardown.
     await ctx.fiber.dispose()
@@ -326,14 +348,14 @@ describe('dynamic configuration', () => {
     const ctx = await harness(server.url)
     expect(ctx.llm.providerRetryPolicy(PROVIDER)).toMatchObject({ maxRetries: 5 })
 
-    await ctx.settings.update(NS, { retryPolicy: { mode: 'normal', maxRetries: 2 } })
+    await ctx.settings.update(NS, { profiles: { tokener: { retryPolicy: { mode: 'normal', maxRetries: 2 } } } })
     expect(ctx.llm.providerRetryPolicy(PROVIDER)).toMatchObject({ maxRetries: 2 })
   })
 
   it('keeps the provider registered when the retry policy is unchanged', async () => {
     const server = await mockServer([{ kind: 'sse', events: textEvents }])
     const ctx = await harness(server.url)
-    await ctx.settings.update(NS, { baseURL: server.url })
+    await ctx.settings.update(NS, { profiles: { tokener: { baseURL: server.url } } })
     expect(ctx.llm.listProviders()).toEqual([{ id: PROVIDER, name: 'Tokener' }])
   })
 })
@@ -627,7 +649,7 @@ describe('ambient environment fallback', () => {
     vi.stubEnv('TOKENER_API_KEY', 'ambient-key')
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
-    await ctx.plugin(LlmTokener, { baseURL: 'http://127.0.0.1:1' })
+    await ctx.plugin(LlmTokener, { profiles: { tokener: { baseURL: 'http://127.0.0.1:1' } } })
     expect(launchEnvironmentOf(ctx).get('TOKENER_API_KEY')?.value).toBe('ambient-key')
   })
 
@@ -636,7 +658,7 @@ describe('ambient environment fallback', () => {
     vi.stubEnv('TOKENER_API_KEY', 'ambient-key')
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
-    await ctx.plugin(LlmTokener, { baseURL: server.url })
+    await ctx.plugin(LlmTokener, { profiles: { tokener: { baseURL: server.url } } })
 
     await assemble(ctx, { model: 'glm-5.2', messages: [user('hi')] })
     expect(server.headers[0]?.['x-api-key']).toBe('ambient-key')
