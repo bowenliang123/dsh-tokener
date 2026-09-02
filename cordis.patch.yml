@@ -1,0 +1,5 @@
+# Bundle patch layer: loads this package's main entry as a plain Cordis
+# plugin registering the `tokener` provider route on ctx.llm.
+- insert:
+    - id: llm-tokener
+      name: dsh-tokener
