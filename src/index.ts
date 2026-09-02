@@ -310,11 +310,20 @@ export function apply(ctx: Context, config: Config): void {
   })
 
   ctx.inject(['settings'], (settingsCtx) => {
-    settingsCtx.settings.installSection(ctx, NS, Config, config, {
-      setSource: (source) => {
-        current = source
-      },
-      onChange: ensureRegistrationFacts,
+    // The host settings service may predate `installSection` (it arrived in
+    // 0.1.2-alpha); `register` + the scope handle are the compatible seam on
+    // every release: the composition entry rides as the base layer, a stored
+    // `llm-tokener:` section layers over it, and the watch pushes committed
+    // changes into the per-request resolution without a restart.
+    const scope = settingsCtx.settings.register(NS, Config, {
+      base: config,
     })
+    current = () => scope.get()
+    const disposeWatch = scope.watch(() => {
+      ensureRegistrationFacts()
+    })
+    ctx.effect(() => disposeWatch, 'llm-tokener: settings watch')
+    // A stored section may already differ from the composition entry.
+    ensureRegistrationFacts()
   })
 }

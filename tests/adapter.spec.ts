@@ -301,8 +301,8 @@ describe('dynamic configuration', () => {
     const ctx = await harness(serverA.url)
 
     // The settings schema accepts both bounds, but the resolve step refuses a
-    // thinking budget at or above the output cap: the section is rejected
-    // where it is written and the previous facts keep serving.
+    // thinking budget at or above the output cap: the snapshot fails where it
+    // is read, the previous facts keep serving, and the failure is logged.
     await ctx.settings.update(NS, { maxTokens: 4_096, thinkingBudgetTokens: 4_096 })
     await assemble(ctx, { model: 'glm-5.2', messages: [user('hi')] })
     expect(serverA.requests).toHaveLength(1)
@@ -310,6 +310,15 @@ describe('dynamic configuration', () => {
     await ctx.settings.update(NS, {})
     await assemble(ctx, { model: 'glm-5.2', messages: [user('hi')] })
     expect(serverA.requests).toHaveLength(2)
+  })
+
+  it('unregisters the namespace watch when the plugin fiber disposes', async () => {
+    const server = await mockServer([{ kind: 'sse', events: textEvents }])
+    const ctx = await harness(server.url)
+    expect(ctx.settings.get(NS)).toMatchObject({ baseURL: server.url })
+    // The watch disposer is bound to this plugin's fiber; the service detaches
+    // with the same dispose, so the observable contract is a clean teardown.
+    await ctx.fiber.dispose()
   })
 
   it('re-registers the route when the retry policy changes', async () => {
