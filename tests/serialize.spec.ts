@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { LlmError, ReasoningEffortId, createAssistantMessage, createMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { ReasoningEffortId, createAssistantMessage, createMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, GenerateOptions, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { AttachmentId, ImageVariantId } from '@deepseek-ai/dsh-attachment'
 import type { ImageAttachmentRef, RequestImageAttachment } from '@deepseek-ai/dsh-attachment'
-import { DEFAULT_EFFORT_BUDGETS, resolveThinking, serializeMessages, serializeRequest } from '../src/serialize.ts'
+import { resolveThinking, serializeMessages, serializeRequest } from '../src/serialize.ts'
 import type { RequestDefaults } from '../src/serialize.ts'
 
 const imageRef: ImageAttachmentRef = {
@@ -41,41 +41,33 @@ function assistant(blocks: ContentBlock[]) {
 const CALL = brandString<ToolCallId>('call_1')
 
 describe('serializeMessages', () => {
-  it('maps user text, dropping empty text blocks', async () => {
+  it('maps user text, drops empty text blocks, and keeps turn alignment on empty turns', async () => {
     const wire = await serializeMessages([
       user('hello'),
       user('', [{ type: 'text', text: '' }]),
     ])
     expect(wire).toEqual([
-      { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+      { role: 'user', content: 'hello' },
+      { role: 'user', content: '' },
     ])
   })
 
-  it('skips system-role messages (the caller hoists them) and degenerate empty user turns', async () => {
+  it('keeps system-role messages as wire system messages and skips empty ones', async () => {
     const wire = await serializeMessages([
-      createUserMessage({ content: [], source: { kind: 'user' } }),
-    ])
-    expect(wire).toEqual([])
-  })
-
-  it('skips reasoning and tool-call blocks inside user content', async () => {
-    const CALL2 = brandString<ToolCallId>('call_9')
-    const wire = await serializeMessages([
-      createUserMessage({
-        content: [
-          { type: 'reasoning', text: 'thoughts' },
-          { type: 'tool-call', id: CALL2, name: 'x', arguments: '{}' },
-          { type: 'text', text: 'real content' },
-        ],
-        source: { kind: 'user' },
+      createMessage({ role: 'system', content: [{ type: 'text', text: '' }], source: { kind: 'plugin', plugin: 'test' } }),
+      createAssistantMessage({
+        content: [{ type: 'text', text: 'answer' }],
+        source: { provider: 'tokener', model: 'glm-5.2' },
       }),
+      createMessage({ role: 'system', content: [{ type: 'text', text: 'rules' }], source: { kind: 'plugin', plugin: 'test' } }),
     ])
     expect(wire).toEqual([
-      { role: 'user', content: [{ type: 'text', text: 'real content' }] },
+      { role: 'assistant', content: 'answer' },
+      { role: 'system', content: 'rules' },
     ])
   })
 
-  it('serializes assistant text and tool calls with parsed JSON arguments', async () => {
+  it('serializes assistant text, reasoning passback, and parsed tool calls', async () => {
     const wire = await serializeMessages([
       assistant([
         { type: 'text', text: 'checking' },
@@ -86,98 +78,56 @@ describe('serializeMessages', () => {
     expect(wire).toEqual([
       {
         role: 'assistant',
-        content: [
-          { type: 'text', text: 'checking' },
-          { type: 'tool_use', id: CALL, name: 'lookup', input: { q: 'hz' } },
-        ],
+        content: 'checking',
+        reasoning_content: 'secret thoughts',
+        tool_calls: [{ id: CALL, type: 'function', function: { name: 'lookup', arguments: '{"q":"hz"}' } }],
       },
     ])
   })
 
-  it('throws INVALID_REQUEST on malformed tool-call arguments', async () => {
-    await expect(serializeMessages([
+  it('passes tool-call arguments through as raw JSON strings (the dialect needs no parsing)', async () => {
+    const wire = await serializeMessages([
       assistant([{ type: 'tool-call', id: CALL, name: 'lookup', arguments: '{broken' }]),
-    ])).rejects.toMatchObject({ code: 'INVALID_REQUEST' })
+    ])
+    expect(wire[0]?.tool_calls?.[0]?.function?.arguments).toBe('{broken')
   })
 
-  it('substitutes a placeholder when an assistant turn has no representable content', async () => {
+  it('expands tool results into role:tool messages with placeholders for empty output', async () => {
     const wire = await serializeMessages([
-      assistant([{ type: 'reasoning', text: 'only thoughts' }]),
-      assistant([{ type: 'text', text: '' }]),
+      createToolResultMessage({ callId: CALL, content: [{ type: 'text', text: 'sunny 30C' }], isError: false }),
+      createUserMessage({
+        content: [{ type: 'tool-result', toolCallId: CALL, content: [], isError: true }],
+        source: { kind: 'user' },
+      }),
     ])
     expect(wire).toEqual([
-      { role: 'assistant', content: [{ type: 'text', text: '(empty response)' }] },
-      { role: 'assistant', content: [{ type: 'text', text: '(empty response)' }] },
+      { role: 'tool', tool_call_id: CALL, content: 'sunny 30C' },
+      { role: 'tool', tool_call_id: CALL, content: '(no output)' },
     ])
   })
 
-  it('keeps an all-empty system vocabulary out of the request', async () => {
-    const request = await serializeRequest({
-      provider: 'tokener',
-      model: 'm',
-      messages: [
-        createMessage({
-          role: 'system',
-          content: [{ type: 'text', text: '' }],
-          source: { kind: 'plugin', plugin: 'test' },
-        }),
-      ],
-    })
-    expect(request.system).toBeUndefined()
-    expect(request.messages).toEqual([])
-  })
-
-  it('expands tool results into tool_result blocks ahead of remaining user content', async () => {
+  it('recurses into nested tool-result blocks and skips non-input vocabulary', async () => {
     const wire = await serializeMessages([
-      createToolResultMessage({
-        callId: CALL,
-        content: [{ type: 'text', text: 'sunny 30C' }],
-        isError: false,
-      }),
       createUserMessage({
         content: [
-          { type: 'tool-result', toolCallId: CALL, content: [{ type: 'text', text: 'boom' }], isError: true },
-          { type: 'text', text: 'and also' },
+          { type: 'tool-result', toolCallId: CALL, content: [{ type: 'tool-result', toolCallId: CALL, content: [{ type: 'text', text: 'nested' }], isError: false }], isError: false },
+          { type: 'reasoning', text: 'thoughts' },
+          { type: 'text', text: 'visible' },
         ],
         source: { kind: 'user' },
       }),
     ])
     expect(wire).toEqual([
-      { role: 'user', content: [{ type: 'tool_result', tool_use_id: CALL, content: [{ type: 'text', text: 'sunny 30C' }] }] },
-      {
-        role: 'user',
-        content: [
-          { type: 'tool_result', tool_use_id: CALL, content: [{ type: 'text', text: 'boom' }], is_error: true },
-          { type: 'text', text: 'and also' },
-        ],
-      },
+      { role: 'user', content: 'visible' },
+      { role: 'tool', tool_call_id: CALL, content: 'nested' },
     ])
   })
 
-  it('substitutes a placeholder for empty tool output and flattens nested tool-result blocks', async () => {
-    const wire = await serializeMessages([
-      createToolResultMessage({ callId: CALL, content: [], isError: false }),
-      createUserMessage({
-        content: [{
-          type: 'tool-result',
-          toolCallId: CALL,
-          content: [{ type: 'tool-result', toolCallId: CALL, content: [{ type: 'text', text: 'nested' }], isError: false }],
-          isError: false,
-        }],
-        source: { kind: 'user' },
-      }),
+  it('emits prepared images as inline base64 parts and rejects unprepared ones', async () => {
+    const withImage = user('look', [
+      { type: 'text', text: 'look' },
+      { type: 'image', attachment: imageRef },
     ])
-    expect(wire).toEqual([
-      { role: 'user', content: [{ type: 'tool_result', tool_use_id: CALL, content: [{ type: 'text', text: '(no output)' }] }] },
-      { role: 'user', content: [{ type: 'tool_result', tool_use_id: CALL, content: [{ type: 'text', text: 'nested' }] }] },
-    ])
-  })
-
-  it('emits prepared images as base64 blocks and rejects unprepared ones', async () => {
-    const withImage = createUserMessage({
-      content: [{ type: 'text', text: 'look' }, { type: 'image', attachment: imageRef }],
-      source: { kind: 'user' },
-    })
     const prepared = { requestImages: new Map([[imageRef.attachmentId, requestImage()]]) }
     const wire = await serializeMessages([withImage], prepared)
     expect(wire).toEqual([
@@ -185,48 +135,53 @@ describe('serializeMessages', () => {
         role: 'user',
         content: [
           { type: 'text', text: 'look' },
-          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: Buffer.from([1, 2, 3]).toString('base64') } },
+          { type: 'image_url', image_url: { url: `data:image/png;base64,${Buffer.from([1, 2, 3]).toString('base64')}` } },
         ],
       },
     ])
     await expect(serializeMessages([withImage])).rejects.toMatchObject({ code: 'UNSUPPORTED_CONTENT' })
   })
+
+  it('keeps mixed user turns on parts and routes tool-result images to a following user message', async () => {
+    const wire = await serializeMessages([
+      createUserMessage({
+        content: [
+          { type: 'tool-result', toolCallId: CALL, content: [{ type: 'image', attachment: imageRef }], isError: false },
+          { type: 'text', text: 'and this?' },
+        ],
+        source: { kind: 'user' },
+      }),
+    ], { requestImages: new Map([[imageRef.attachmentId, requestImage()]]) })
+    expect(wire).toEqual([
+      { role: 'user', content: 'and this?' },
+      { role: 'tool', tool_call_id: CALL, content: '(no output)' },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Attached image(s) from tool result:' },
+          { type: 'image_url', image_url: { url: `data:image/png;base64,${Buffer.from([1, 2, 3]).toString('base64')}` } },
+        ],
+      },
+    ])
+  })
 })
 
 describe('resolveThinking', () => {
-  const base = { purpose: undefined, maxTokens: 16_384 } as const
+  const base = { purpose: undefined } as const
 
-  it('stays off by default and for session titles', () => {
-    expect(resolveThinking({ ...base }, {})).toBeUndefined()
-    // tier budget 49,152 clamps under the 16,384 max_tokens with 1,024 headroom
-    expect(resolveThinking({ ...base, reasoningEffort: ReasoningEffortId('max') }, { reasoningEffort: 'max' }))
-      .toEqual({ type: 'enabled', budget_tokens: 15_360 })
-    expect(resolveThinking({
-      purpose: 'session-title',
-      reasoningEffort: ReasoningEffortId('max'),
-      maxTokens: 16_384,
-    }, {})).toBeUndefined()
+  it('sends nothing by default, for session titles it sends an explicit disabled', () => {
+    expect(resolveThinking({ ...base }, {})).toEqual({})
+    expect(resolveThinking({ ...base, reasoningEffort: ReasoningEffortId('high') }, { reasoningEffort: 'high' }))
+      .toEqual({ reasoning_effort: 'high' })
+    expect(resolveThinking({ purpose: 'session-title', reasoningEffort: ReasoningEffortId('high') }, {}))
+      .toEqual({ reasoning_effort: 'low' })
   })
 
-  it('sends the tier budget unclamped when the request names no max_tokens', () => {
-    expect(resolveThinking(
-      { purpose: undefined, reasoningEffort: ReasoningEffortId('medium') },
-      { reasoningEffort: 'medium' },
-    )).toEqual({ type: 'enabled', budget_tokens: DEFAULT_EFFORT_BUDGETS.medium })
-  })
-
-  it('maps each tier to its budget and clamps under max_tokens with headroom', () => {
-    expect(resolveThinking({ ...base }, { reasoningEffort: 'low', effortBudgets: { low: 4_096 } }))
-      .toEqual({ type: 'enabled', budget_tokens: 4_096 })
-    // tier budget 4,096 clamps to max_tokens 2,048 minus the 1,024 headroom
-    expect(resolveThinking(
-      { purpose: undefined, reasoningEffort: ReasoningEffortId('low'), maxTokens: 2_048 },
-      { reasoningEffort: 'low', effortBudgets: { low: 4_096 } },
-    )).toEqual({ type: 'enabled', budget_tokens: 1_024 })
-    expect(() => resolveThinking(
-      { purpose: undefined, reasoningEffort: ReasoningEffortId('low'), maxTokens: 1_024 },
-      { effortBudgets: { low: 4_096 } },
-    )).toThrow(LlmError)
+  it('maps low/high/max onto reasoning_effort', () => {
+    expect(resolveThinking({ ...base, reasoningEffort: ReasoningEffortId('low') }, {}))
+      .toEqual({ reasoning_effort: 'low' })
+    expect(resolveThinking({ ...base, reasoningEffort: ReasoningEffortId('max') }, {}))
+      .toEqual({ reasoning_effort: 'max' })
   })
 })
 
@@ -236,11 +191,7 @@ describe('serializeRequest', () => {
       provider: 'tokener',
       model: 'glm-5.2',
       messages: [
-        createMessage({
-          role: 'system',
-          content: [{ type: 'text', text: 'house rules' }],
-          source: { kind: 'plugin', plugin: 'test' },
-        }),
+        { ...createUserMessage({ content: [{ type: 'text', text: 'house rules' }], source: { kind: 'plugin', plugin: 'test' } }), role: 'system' } as never,
         user('hi'),
       ],
       system: 'be brief',
@@ -249,19 +200,23 @@ describe('serializeRequest', () => {
       maxTokens: 2_048,
       stop: ['END'],
     })
-    expect(request).toEqual({
+    expect(request).toMatchObject({
       model: 'glm-5.2',
-      max_tokens: 2_048,
       stream: true,
-      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
-      system: 'be brief\n\nhouse rules',
-      tools: [{ name: 'lookup', description: 'Search', input_schema: { type: 'object' } }],
+      stream_options: { include_usage: true },
+      messages: [
+        { role: 'system', content: 'be brief' },
+        { role: 'system', content: 'house rules' },
+        { role: 'user', content: 'hi' },
+      ],
+      tools: [{ type: 'function', function: { name: 'lookup', description: 'Search', parameters: { type: 'object' } } }],
       temperature: 0.5,
-      stop_sequences: ['END'],
+      max_tokens: 2_048,
+      stop: ['END'],
     })
   })
 
-  it('sends the thinking control only when the extended effort resolves', async () => {
+  it('sends reasoning_effort plus thinking only when an effort resolves', async () => {
     const options: GenerateOptions = {
       provider: 'tokener',
       model: 'm',
@@ -269,24 +224,25 @@ describe('serializeRequest', () => {
       maxTokens: 16_384,
     }
     const plain = await serializeRequest(options)
-    expect(plain.thinking).toBeUndefined()
-    expect(plain.system).toBeUndefined()
-    const extended = await serializeRequest(options, { reasoningEffort: 'high', effortBudgets: { high: 2_048 } })
-    expect(extended.thinking).toEqual({ type: 'enabled', budget_tokens: 2_048 })
+    expect(plain.reasoning_effort).toBeUndefined()
+    const high = await serializeRequest(options, { reasoningEffort: 'high' })
+    expect(high.reasoning_effort).toBe('high')
+    const off = await serializeRequest({ ...options, reasoningEffort: ReasoningEffortId('off') })
+    expect(off.reasoning_effort).toBeUndefined()
   })
 
   it('omits empty tools arrays and absent optionals', async () => {
     const request = await serializeRequest({ provider: 'tokener', model: 'm', messages: [], tools: [] })
     expect(request.tools).toBeUndefined()
     expect(request.temperature).toBeUndefined()
-    expect(request.stop_sequences).toBeUndefined()
-    expect(request.max_tokens).toBe(0)
+    expect(request.stop).toBeUndefined()
+    expect(request.max_tokens).toBeUndefined()
   })
 })
 
 describe('request defaults type', () => {
   it('documents the effort vocabulary', () => {
-    const defaults: RequestDefaults = { reasoningEffort: 'off', effortBudgets: { low: 1_024 } }
+    const defaults: RequestDefaults = { reasoningEffort: 'off' }
     expect(defaults.reasoningEffort).toBe('off')
   })
 })

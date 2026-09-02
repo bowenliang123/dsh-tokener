@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseSse } from '../src/sse.ts'
+import { DONE, parseSse } from '../src/sse.ts'
 
 /** Build a readable byte stream from string chunks. */
 function streamOf(...chunks: string[]): ReadableStream<BufferSource> {
@@ -24,47 +24,35 @@ async function collect(stream: ReadableStream<BufferSource>, onComment?: (commen
 }
 
 describe('parseSse', () => {
-  it('yields named events in arrival order', async () => {
-    const raw = 'event: message_start\ndata: {"type":"message_start"}\n\nevent: ping\ndata: {}\n\n'
-    expect(await collect(streamOf(raw))).toEqual([
-      { event: 'message_start', data: '{"type":"message_start"}' },
-      { event: 'ping', data: '{}' },
-    ])
+  it('yields data payloads in arrival order, the [DONE] sentinel last', async () => {
+    const raw = 'data: {"a":1}\n\ndata: {"b":2}\n\ndata: [DONE]\n\n'
+    expect(await collect(streamOf(raw))).toEqual(['{"a":1}', '{"b":2}', DONE])
   })
 
   it('reassembles events split across read boundaries, including mid-UTF-8', async () => {
-    const raw = 'event: content_block_delta\ndata: {"delta":"héllo"}\n\n'
-    const split = 30
+    const raw = 'data: {"delta":"héllo"}\n\ndata: [DONE]\n\n'
+    const split = 14
     expect(await collect(streamOf(raw.slice(0, split), raw.slice(split)))).toEqual([
-      { event: 'content_block_delta', data: '{"delta":"héllo"}' },
+      '{"delta":"héllo"}',
+      DONE,
     ])
   })
 
   it('handles CRLF framing and multi-line data', async () => {
-    const raw = 'event: a\r\ndata: line1\ndata: line2\r\n\r\n'
-    expect(await collect(streamOf(raw))).toEqual([
-      { event: 'a', data: 'line1\nline2' },
-    ])
+    const raw = 'data: line1\ndata: line2\r\n\r\ndata: [DONE]\n\n'
+    expect(await collect(streamOf(raw))).toEqual(['line1\nline2', DONE])
   })
 
   it('routes comments to the activity callback without yielding them', async () => {
     const comments: string[] = []
-    const raw = ': keep-alive\n\nevent: ping\ndata: {}\n\n'
+    const raw = ': keep-alive\n\ndata: {}\n\ndata: [DONE]\n\n'
     const events = await collect(streamOf(raw), comment => comments.push(comment))
-    expect(events).toEqual([{ event: 'ping', data: '{}' }])
+    expect(events).toEqual(['{}', DONE])
     expect(comments).toEqual(['keep-alive'])
   })
 
-  it('reports unnamed events with an empty event name and skips empty data', async () => {
-    const raw = 'event: silent\n\ndata: {"type":"message_stop"}\n\n'
-    expect(await collect(streamOf(raw))).toEqual([
-      { event: '', data: '{"type":"message_stop"}' },
-    ])
-  })
-
-  it('simply ends iteration at EOF (termination is the translator\'s contract)', async () => {
-    expect(await collect(streamOf('event: message_stop\ndata: {}\n\n'))).toEqual([
-      { event: 'message_stop', data: '{}' },
-    ])
+  it('throws STREAM_CLOSED when the stream ends without [DONE]', async () => {
+    await expect(collect(streamOf('data: {"a":1}\n\n')))
+      .rejects.toMatchObject({ code: 'STREAM_CLOSED' })
   })
 })

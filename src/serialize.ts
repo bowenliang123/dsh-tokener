@@ -1,9 +1,9 @@
 /**
- * Serialize harness messages into an Anthropic Messages request for the
- * Tokener gateway. Tool results ride `tool_result` blocks inside user
- * messages; assistant reasoning is deliberately not replayed (gateway models
- * return unsigned thinking blocks, and a multi-vendor gateway cannot verify
- * signatures from a different upstream); images resolve to inline base64.
+ * Serialize harness messages into Tokener's OpenAI-compatible chat
+ * completions. Tool-result blocks become standalone `{role: 'tool'}` wire
+ * messages; images resolve to ordered inline `image_url` parts; assistant
+ * reasoning rides back as `reasoning_content` (plain text — the OpenAI
+ * dialect has no signatures, so replay needs no verification).
  *
  * @module dsh-tokener/serialize
  */
@@ -11,106 +11,68 @@
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
 import type { RequestImageAttachment } from '@deepseek-ai/dsh-attachment'
-import type { WireContentBlock, WireMessage, WireRequest, WireThinking, WireTool } from './types.ts'
+import type { ReasoningEffort, ResolvedThinking } from './types.ts'
+import type { WireMessage, WireRequest, WireTool, WireUserContentPart } from './types.ts'
 
 /** Adapter-level request defaults (from plugin config). */
 export interface RequestDefaults {
-  /** Default thinking effort for calls that name none. */
+  /** Default thinking effort for calls that name none (default `off`). */
   reasoningEffort?: ReasoningEffort | undefined
-  /** Budget override per non-off effort; missing tiers fall back to {@link DEFAULT_EFFORT_BUDGETS}. */
-  effortBudgets?: Partial<Record<Exclude<ReasoningEffort, 'off'>, number>> | undefined
 }
-
-/** The selectable thinking-effort vocabulary this adapter exposes. */
-export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'max'
-
-/** Default thinking budget per effort tier (protocol floor is 1,024). */
-export const DEFAULT_EFFORT_BUDGETS: Record<Exclude<ReasoningEffort, 'off'>, number> = {
-  low: 4_096,
-  medium: 12_288,
-  high: 24_576,
-  max: 49_152,
-}
-
-/** Headroom kept for visible output when a budget is clamped under max_tokens. */
-const BUDGET_HEADROOM_TOKENS = 1_024
 
 /** Prepared request images, keyed by durable attachment id. Present only when the request carries images. */
 export interface ImageSerializationOptions {
   requestImages: ReadonlyMap<string, RequestImageAttachment>
 }
 
-/** Minimum thinking budget the Anthropic Messages protocol accepts. */
-export const MIN_THINKING_BUDGET_TOKENS = 1024
-
-/** Default thinking budget when the `extended` effort is selected and config supplies none. */
-export const DEFAULT_THINKING_BUDGET_TOKENS = 8_192
-
 /** Text substituted for tool results that carry no representable content. */
 const EMPTY_TOOL_OUTPUT = '(no output)'
 
-/** Text substituted when an assistant turn has no wire-representable content left. */
-const EMPTY_ASSISTANT_TEXT = '(empty response)'
-
 /**
- * Resolve the thinking-channel control for one request.
- *
- * `off` (or no effort) sends no thinking parameter — the gateway model keeps
- * its own default. Every other tier sends `thinking: {type: 'enabled'}` with
- * the tier's budget, clamped under `max_tokens` so the protocol constraint
- * (budget strictly below max_tokens, plus headroom for visible output) holds
- * no matter how large the tier is configured. Tokener's own docs define no
- * effort parameter at all, so tiers are Anthropic-standard expressions of
- * intent: honored natively by Anthropic upstreams, advisory elsewhere.
+ * Resolve the thinking-channel fields for one request.
+ * - `off` (or no effort) sends nothing — the gateway model keeps its own default.
+ * - `low` / `high` / `max` send `reasoning_effort`, the one thinking-control
+ *   field the gateway accepts on the chat-completions dialect.
+ * - Session titles run at the smallest effort instead.
  */
 export function resolveThinking(
-  options: Pick<GenerateOptions, 'reasoningEffort' | 'purpose' | 'maxTokens'>,
+  options: Pick<GenerateOptions, 'reasoningEffort' | 'purpose'>,
   defaults: RequestDefaults,
-): WireThinking | undefined {
-  // Auxiliary short answers never need the thinking channel, even when the
-  // model default or the effort selection would enable it.
-  if (options.purpose === 'session-title') return undefined
-  // The branded wire id and the config union share one spelling.
-  const effort = (options.reasoningEffort ?? defaults.reasoningEffort) as ReasoningEffort | undefined
-  if (effort === undefined || effort === 'off') return undefined
-  const tierBudget = defaults.effortBudgets?.[effort] ?? DEFAULT_EFFORT_BUDGETS[effort]
-  if (options.maxTokens === undefined) {
-    return { type: 'enabled', budget_tokens: tierBudget }
-  }
-  const budget = Math.min(tierBudget, options.maxTokens - BUDGET_HEADROOM_TOKENS)
-  if (budget < MIN_THINKING_BUDGET_TOKENS) {
-    throw new LlmError(
-      `thinking effort "${effort}" needs budget_tokens of at least ${MIN_THINKING_BUDGET_TOKENS},`
-        + ` but max_tokens ${options.maxTokens} leaves no room for it`,
-      'INVALID_REQUEST',
-    )
-  }
-  return { type: 'enabled', budget_tokens: budget }
+): ResolvedThinking {
+  if (options.purpose === 'session-title') return { reasoning_effort: 'low' }
+  const effort = options.reasoningEffort ?? defaults.reasoningEffort
+  if (effort === undefined || effort === 'off') return {}
+  // The harness's branded wire id shares the plain wire spelling.
+  // The harness's branded wire id shares the plain wire spelling.
+  return { reasoning_effort: effort as Exclude<ReasoningEffort, 'off'> }
 }
 
-/** Base64-encode one prepared request image into an Anthropic image block. */
-function imageBlock(version: RequestImageAttachment): WireContentBlock {
+/** Join the text blocks of a message. */
+function flattenText(blocks: readonly ContentBlock[]): string {
+  return blocks
+    .filter(block => block.type === 'text')
+    .map(block => block.text)
+    .join('')
+}
+
+/** Base64-encode one prepared request image into an inline image_url part. */
+function imagePart(version: RequestImageAttachment): WireUserContentPart {
   return {
-    type: 'image',
-    source: {
-      type: 'base64',
-      media_type: version.mediaType,
-      data: Buffer.from(version.data).toString('base64'),
-    },
+    type: 'image_url',
+    image_url: { url: `data:${version.mediaType};base64,${Buffer.from(version.data).toString('base64')}` },
   }
 }
 
-/** Convert text/image blocks (recursing into nested tool results) into wire blocks. */
-async function wireBlocks(
+/** Convert text/image blocks (recursing into nested tool results) into wire parts. */
+async function contentParts(
   blocks: readonly ContentBlock[],
   images: ImageSerializationOptions | undefined,
-): Promise<WireContentBlock[]> {
-  const wire: WireContentBlock[] = []
+): Promise<WireUserContentPart[]> {
+  const parts: WireUserContentPart[] = []
   for (const block of blocks) {
     switch (block.type) {
       case 'text':
-        // Empty text blocks are rejected by the protocol; drop them.
-        if (block.text.length > 0) wire.push({ type: 'text', text: block.text })
+        if (block.text.length > 0) parts.push({ type: 'text', text: block.text })
         break
       case 'image': {
         const version = images?.requestImages.get(block.attachment.attachmentId)
@@ -120,122 +82,133 @@ async function wireBlocks(
             'UNSUPPORTED_CONTENT',
           )
         }
-        wire.push(imageBlock(version))
+        parts.push(imagePart(version))
         break
       }
       case 'tool-result':
-        wire.push(...await wireBlocks(block.content, images))
+        parts.push(...await contentParts(block.content, images))
         break
       default:
         // Reasoning and tool-call blocks are not user-input vocabulary.
         break
     }
   }
-  return wire
+  return parts
 }
 
-/** Serialize one `tool_result` block, substituting a placeholder for empty output. */
-async function wireToolResult(
-  block: Extract<ContentBlock, { type: 'tool-result' }>,
-  images: ImageSerializationOptions | undefined,
-): Promise<WireContentBlock> {
-  const content = await wireBlocks(block.content, images)
+/** Keep text-only user messages on the compact string wire form. */
+function userContent(parts: readonly WireUserContentPart[]): string | WireUserContentPart[] {
+  const text: string[] = []
+  for (const part of parts) {
+    if (part.type !== 'text') return [...parts]
+    text.push(part.text)
+  }
+  return text.join('')
+}
+
+/** Serialize one assistant turn (text + reasoning passback + tool calls). */
+function serializeAssistant(message: Message): WireMessage {
+  const text = flattenText(message.content)
+  const reasoning = message.content
+    .filter(block => block.type === 'reasoning')
+    .map(block => block.text)
+    .join('')
+  const toolCalls = message.content
+    .filter(block => block.type === 'tool-call')
+    .map(block => ({
+      id: block.id,
+      type: 'function' as const,
+      function: { name: block.name, arguments: block.arguments },
+    }))
+
   return {
-    type: 'tool_result',
-    tool_use_id: block.toolCallId,
-    content: content.length > 0 ? content : [{ type: 'text', text: EMPTY_TOOL_OUTPUT }],
-    ...block.isError === true ? { is_error: true } : {},
+    role: 'assistant',
+    // Text-less turns send "" — NEVER null. Some upstreams reject null content
+    // outright, and since the message sits durably in the session log, a null
+    // here bricks every later turn of that session.
+    content: text,
+    // CoT passback on every reasoning-carrying turn: the OpenAI dialect has no
+    // signatures, so replay is plain text, and DeepSeek upstreams expect the
+    // passback on tool-call turns.
+    ...reasoning.length > 0 ? { reasoning_content: reasoning } : {},
+    ...toolCalls.length > 0 ? { tool_calls: toolCalls } : {},
   }
-}
-
-/** Serialize one assistant turn. Reasoning is dropped (see module doc). */
-function wireAssistant(blocks: readonly ContentBlock[]): WireContentBlock[] {
-  const wire: WireContentBlock[] = []
-  for (const block of blocks) {
-    switch (block.type) {
-      case 'text':
-        if (block.text.length > 0) wire.push({ type: 'text', text: block.text })
-        break
-      case 'tool-call': {
-        let input: Record<string, unknown>
-        try {
-          input = JSON.parse(block.arguments) as Record<string, unknown>
-        } catch (error) {
-          throw new LlmError(
-            `tool call "${block.name}" (${block.id}) carries malformed JSON arguments and cannot be replayed`,
-            'INVALID_REQUEST',
-            { cause: error },
-          )
-        }
-        wire.push({ type: 'tool_use', id: block.id, name: block.name, input })
-        break
-      }
-      default:
-        break
-    }
-  }
-  // A thinking-only turn leaves nothing representable; the protocol rejects
-  // empty content arrays, so a placeholder keeps the history replayable.
-  return wire.length > 0 ? wire : [{ type: 'text', text: EMPTY_ASSISTANT_TEXT }]
 }
 
 /**
- * Serialize the conversation into wire messages. User-role tool results come
- * first within their turn, then text/image blocks; system-role messages are
- * hoisted to the top-level system string by the caller.
+ * Serialize the conversation. `tool-result` blocks become standalone
+ * `{role: 'tool'}` wire messages; a user message contributes its text/images
+ * first and its tool results as separate wire messages after. Images inside
+ * tool results cannot ride the string-only tool content, so they join a
+ * following user message.
  * @param messages - the harness conversation, in order.
  * @param images - prepared request images, when the request carries any.
- * @returns ordered wire messages with role user/assistant only.
+ * @returns ordered wire messages; order preserved.
  */
 export async function serializeMessages(
   messages: readonly Message[],
   images?: ImageSerializationOptions,
 ): Promise<WireMessage[]> {
   const wire: WireMessage[] = []
+  let pendingToolImages: WireUserContentPart[] = []
+  const flushToolImages = (): void => {
+    if (pendingToolImages.length === 0) return
+    wire.push({
+      role: 'user',
+      content: [{ type: 'text', text: 'Attached image(s) from tool result:' }, ...pendingToolImages],
+    })
+    pendingToolImages = []
+  }
+
   for (const message of messages) {
-    if (message.role === 'assistant') {
-      wire.push({ role: 'assistant', content: wireAssistant(message.content) })
+    if (message.role === 'system') {
+      const text = flattenText(message.content)
+      if (text.length > 0) wire.push({ role: 'system', content: text })
       continue
     }
-    if (message.role === 'system') continue
+    if (message.role === 'assistant') {
+      flushToolImages()
+      wire.push(serializeAssistant(message))
+      continue
+    }
+
     const toolResults = message.content.filter(
       (block): block is Extract<ContentBlock, { type: 'tool-result' }> => block.type === 'tool-result',
     )
     const regular = message.content.filter(block => block.type !== 'tool-result')
-    const content = [
-      ...await Promise.all(toolResults.map(result => wireToolResult(result, images))),
-      ...await wireBlocks(regular, images),
-    ]
-    // A harness user turn always carries content; skip only a degenerate
-    // hand-built empty one, which the protocol would reject.
-    if (content.length > 0) wire.push({ role: 'user', content })
+    const parts = await contentParts(regular, images)
+    const text = userContent(parts)
+    if (text.length > 0 || toolResults.length === 0) {
+      flushToolImages()
+      wire.push({ role: 'user', content: text })
+    }
+    for (const result of toolResults) {
+      const resultParts = await contentParts(result.content, images)
+      const resultImages = resultParts.filter(
+        (part): part is Extract<WireUserContentPart, { type: 'image_url' }> => part.type === 'image_url',
+      )
+      const resultText = resultParts.filter(part => part.type === 'text').map(part => part.text).join('')
+      flushToolImages()
+      wire.push({
+        role: 'tool',
+        tool_call_id: result.toolCallId,
+        content: resultText.length > 0 ? resultText : EMPTY_TOOL_OUTPUT,
+      })
+      pendingToolImages.push(...resultImages)
+    }
   }
+  flushToolImages()
   return wire
 }
 
-/** Join the top-level system slot and any system-role messages into one system string. */
-function resolveSystem(options: GenerateOptions): string | undefined {
-  const parts: string[] = []
-  if (options.system !== undefined && options.system.length > 0) parts.push(options.system)
-  for (const message of options.messages) {
-    if (message.role !== 'system') continue
-    const text = message.content
-      .filter(block => block.type === 'text')
-      .map(block => block.text)
-      .join('')
-    if (text.length > 0) parts.push(text)
-  }
-  return parts.length > 0 ? parts.join('\n\n') : undefined
-}
-
 /**
- * Build the full streaming wire request. `max_tokens` is protocol-required
- * and always present (the adapter materializes the configured default);
- * optional fields are omitted rather than sent as null.
+ * Build the full wire request. Always streaming (`stream: true`, usage
+ * reporting on); optional fields are omitted rather than sent as null, so
+ * provider defaults apply. `max_tokens` is materialized by the adapter.
  * @param options - the harness request (model, history, system, tools, sampling).
  * @param defaults - adapter-level thinking defaults.
  * @param images - prepared request images; required when messages carry image blocks.
- * @returns the ready-to-post `/messages` body.
+ * @returns the ready-to-post `/chat/completions` body.
  */
 export async function serializeRequest(
   options: GenerateOptions,
@@ -243,20 +216,28 @@ export async function serializeRequest(
   images?: ImageSerializationOptions,
 ): Promise<WireRequest> {
   const tools: WireTool[] | undefined = options.tools?.map(tool => ({
-    name: tool.name,
-    description: tool.description,
-    input_schema: tool.parameters,
+    type: 'function',
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    },
   }))
   const thinking = resolveThinking(options, defaults)
+  const messages: WireMessage[] = []
+  if (options.system !== undefined && options.system.length > 0) {
+    messages.push({ role: 'system', content: options.system })
+  }
+  messages.push(...await serializeMessages(options.messages, images))
   return {
     model: options.model,
-    max_tokens: options.maxTokens ?? 0,
+    messages,
     stream: true,
-    messages: await serializeMessages(options.messages, images),
-    ...resolveSystem(options) === undefined ? {} : { system: resolveSystem(options) },
+    stream_options: { include_usage: true },
     ...tools !== undefined && tools.length > 0 ? { tools } : {},
-    ...thinking === undefined ? {} : { thinking },
+    ...thinking.reasoning_effort === undefined ? {} : { reasoning_effort: thinking.reasoning_effort },
     ...options.temperature === undefined ? {} : { temperature: options.temperature },
-    ...options.stop === undefined ? {} : { stop_sequences: options.stop },
+    ...options.maxTokens === undefined ? {} : { max_tokens: options.maxTokens },
+    ...options.stop === undefined ? {} : { stop: options.stop },
   }
 }

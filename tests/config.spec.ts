@@ -46,13 +46,6 @@ describe('resolveAdapterOptions', () => {
     }])
   })
 
-  it('detaches partial effort budget overrides per tier', () => {
-    // Explicit undefined entries (programmatic construction) are skipped.
-    const resolved = resolveAdapterOptions({ effortBudgets: { low: 4_096, high: undefined } })
-    expect(resolved.defaults.effortBudgets).toMatchObject({ low: 4_096 })
-    expect(resolved.defaults.effortBudgets?.high).toBeUndefined()
-  })
-
   it('normalizes an explicit empty modality array to the detached text-only default', () => {
     // The Models page's model rows store "unspecified" as []; the catalog
     // detaches it unnamed, and resolution answers text-only downstream.
@@ -66,8 +59,6 @@ describe('resolveAdapterOptions', () => {
     [{ maxTokens: 0 }, 'maxTokens'],
     [{ maxTokens: 1.5 }, 'maxTokens'],
     [{ defaultContextWindow: 0 }, 'defaultContextWindow'],
-    [{ effortBudgets: { low: 1_023 } }, 'effortBudgets.low'],
-    [{ effortBudgets: { high: 1.5 } }, 'effortBudgets.high'],
     [{ streamIdleTimeoutMs: 0 }, 'streamIdleTimeoutMs'],
     [{ streamIdleTimeoutMs: Number.POSITIVE_INFINITY }, 'streamIdleTimeoutMs'],
     [{ imageMaxPixels: 0 }, 'imageMaxPixels'],

@@ -46,15 +46,13 @@ export function sse(event: string, data: unknown): MockEvent {
   return { event, data: typeof data === 'string' ? data : JSON.stringify(data) }
 }
 
-/** A minimal complete text generation over the Anthropic wire, reused by request-shape assertions. */
+/** A minimal complete text generation over the OpenAI wire, reused by request-shape assertions. */
 export const textEvents: MockEvent[] = [
-  sse('message_start', { type: 'message_start', message: { id: 'msg_1', model: 'tokener-model', usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } } }),
-  sse('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
-  sse('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hello' } }),
-  sse('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: ' world' } }),
-  sse('content_block_stop', { type: 'content_block_stop', index: 0 }),
-  sse('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { input_tokens: 3, output_tokens: 2 } }),
-  sse('message_stop', { type: 'message_stop' }),
+  sse('data', { choices: [{ index: 0, delta: { role: 'assistant', content: null, reasoning_content: '' } }] }),
+  sse('data', { choices: [{ index: 0, delta: { content: 'hello' } }] }),
+  sse('data', { choices: [{ index: 0, delta: { content: ' world' } }] }),
+  sse('data', { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } }),
+  sse('data', '[DONE]'),
 ]
 
 /** Serialize one event into its wire form (named event + data + blank line). */

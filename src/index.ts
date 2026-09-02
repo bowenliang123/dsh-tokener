@@ -38,8 +38,7 @@ import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
 import { DEFAULT_CONTEXT_WINDOW, DEFAULT_IMAGE_MAX_BYTES, DEFAULT_IMAGE_MAX_PIXELS, DEFAULT_MAX_TOKENS, DEFAULT_STREAM_IDLE_TIMEOUT_MS, fetchModelEntries, PUBLIC_BASE_URL, TokenerAdapter } from './adapter.ts'
 import type { TokenerConnectionOptions } from './adapter.ts'
-import { MIN_THINKING_BUDGET_TOKENS } from './serialize.ts'
-import type { ReasoningEffort } from './serialize.ts'
+import type { ReasoningEffort } from './types.ts'
 import { MODEL_MODALITIES } from './catalog.ts'
 import type { TokenerCatalogModel } from './catalog.ts'
 
@@ -54,8 +53,7 @@ export {
   fetchModelEntries,
 } from './adapter.ts'
 export type { TokenerAdapterOptions, TokenerConnectionOptions } from './adapter.ts'
-export { DEFAULT_EFFORT_BUDGETS, MIN_THINKING_BUDGET_TOKENS } from './serialize.ts'
-export type { ReasoningEffort } from './serialize.ts'
+export type { ReasoningEffort } from './types.ts'
 export type { TokenerCatalogModel } from './catalog.ts'
 
 export const name = 'llm-tokener'
@@ -82,10 +80,8 @@ export interface TokenerProfile {
   apiKeyEnv?: string
   /** Endpoint base; falls back to the public Tokener API. */
   baseURL?: string
-  /** Default thinking effort (default `off`); non-off tiers enable the thinking channel with their tier budget. */
+  /** Default thinking effort (default `off`); `low`/`high`/`max` enable the thinking channel via `reasoning_effort`. */
   reasoningEffort?: ReasoningEffort
-  /** Per-tier thinking budget overrides (tokens); missing tiers fall back to {@link DEFAULT_EFFORT_BUDGETS}. */
-  effortBudgets?: Partial<Record<Exclude<ReasoningEffort, 'off'>, number>>
   /** Default per-request output cap (default 16,384); a model's own cap and explicit request values win. */
   maxTokens?: number
   /** Positive context capacity used when the selected model has no exact value (default 200,000). */
@@ -126,13 +122,7 @@ const catalogModel: z<TokenerCatalogModel> = z.object({
 const profileSchema: z<TokenerProfile> = z.object({
   apiKeyEnv: z.string().role('credential-ref').default(DEFAULT_API_KEY_ENV),
   baseURL: z.string(),
-  reasoningEffort: z.union(['off', 'low', 'medium', 'high', 'max']),
-  effortBudgets: z.object({
-    low: z.number().step(1).min(MIN_THINKING_BUDGET_TOKENS),
-    medium: z.number().step(1).min(MIN_THINKING_BUDGET_TOKENS),
-    high: z.number().step(1).min(MIN_THINKING_BUDGET_TOKENS),
-    max: z.number().step(1).min(MIN_THINKING_BUDGET_TOKENS),
-  }),
+  reasoningEffort: z.union(['off', 'low', 'high', 'max']),
   maxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(DEFAULT_MAX_TOKENS),
   defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW),
   models: z.array(catalogModel).default([]),
@@ -166,18 +156,7 @@ export function resolveAdapterOptions(profile: TokenerProfile): TokenerConnectio
     && (!Number.isInteger(profile.defaultContextWindow) || profile.defaultContextWindow <= 0)) {
     throw new Error('llm-tokener: defaultContextWindow must be a positive integer')
   }
-  const effortBudgets = profile.effortBudgets
-  if (effortBudgets !== undefined) {
-    for (const tier of ['low', 'medium', 'high', 'max'] as const) {
-      const budget = effortBudgets[tier]
-      if (budget === undefined) continue
-      if (!Number.isSafeInteger(budget) || budget < MIN_THINKING_BUDGET_TOKENS) {
-        throw new Error(
-          `llm-tokener: effortBudgets.${tier} must be a safe integer no lower than ${MIN_THINKING_BUDGET_TOKENS}`,
-        )
-      }
-    }
-  }
+
   const streamIdleTimeoutMs = profile.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS
   if (!Number.isFinite(streamIdleTimeoutMs)
     || streamIdleTimeoutMs <= 0
@@ -227,14 +206,6 @@ export function resolveAdapterOptions(profile: TokenerProfile): TokenerConnectio
     baseURL: profile.baseURL ?? PUBLIC_BASE_URL,
     defaults: {
       reasoningEffort: profile.reasoningEffort,
-      effortBudgets: effortBudgets === undefined
-        ? undefined
-        : {
-          low: effortBudgets.low,
-          medium: effortBudgets.medium,
-          high: effortBudgets.high,
-          max: effortBudgets.max,
-        },
     },
     maxTokens: profile.maxTokens ?? DEFAULT_MAX_TOKENS,
     defaultContextWindow: profile.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW,

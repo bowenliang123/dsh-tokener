@@ -90,10 +90,10 @@ function requestImage(ref = imageRef): RequestImageAttachment {
 
 function toolEvents(name = 'get_weather'): MockEvent[] {
   return [
-    sse('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'call_wx', name } }),
-    sse('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"city":"HZ"}' } }),
-    sse('content_block_stop', { type: 'content_block_stop', index: 0 }),
-    sse('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { input_tokens: 12, output_tokens: 6 } }),
+    sse('data', { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_wx', type: 'function', function: { name, arguments: '{"ci' } }] } }] }),
+    sse('data', { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: 'ty":"HZ"}' } }] } }] }),
+    sse('data', { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 12, completion_tokens: 6, total_tokens: 18 } }),
+    sse('data', '[DONE]'),
   ]
 }
 
@@ -141,8 +141,7 @@ describe('streaming through the runtime', () => {
     expect(result.usage).toMatchObject({ inputTokens: 3, outputTokens: 2, totalTokens: 5 })
 
     const headers = server.headers[0]
-    expect(headers['x-api-key']).toBe('env-key')
-    expect(headers['anthropic-version']).toBe('2023-06-01')
+    expect(headers['authorization']).toBe('Bearer env-key')
     expect(headers['content-type']).toBe('application/json')
     expect(headers['accept']).toBe('text/event-stream')
     expect(String(headers['user-agent'])).toContain('deepseek-harness/')
@@ -150,7 +149,8 @@ describe('streaming through the runtime', () => {
       model: 'glm-5.2',
       max_tokens: 16_384,
       stream: true,
-      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      stream_options: { include_usage: true },
+      messages: [{ role: 'user', content: 'hi' }],
     })
   })
 
@@ -166,18 +166,18 @@ describe('streaming through the runtime', () => {
     expect(result.finish).toEqual({ kind: 'tool-calls' })
     expect(result.message.content[0]).toMatchObject({ type: 'tool-call', id: 'call_wx', name: 'get_weather', arguments: '{"city":"HZ"}' })
     expect(server.requests[0]).toMatchObject({
-      tools: [{ name: 'get_weather', description: 'Weather', input_schema: { type: 'object' } }],
+      tools: [{ type: 'function', function: { name: 'get_weather', description: 'Weather', parameters: { type: 'object' } } }],
     })
   })
 
   it('materializes the configured default max_tokens and thinking budget', async () => {
     const server = await mockServer([{ kind: 'sse', events: textEvents }])
-    const ctx = await harness(server.url, { reasoningEffort: 'high', effortBudgets: { high: 2_048 } })
+    const ctx = await harness(server.url, { reasoningEffort: 'high' })
 
     await assemble(ctx, { model: 'glm-5.2', messages: [user('hi')] })
     expect(server.requests[0]).toMatchObject({
       max_tokens: 16_384,
-      thinking: { type: 'enabled', budget_tokens: 2_048 },
+      reasoning_effort: 'high',
     })
   })
 
@@ -195,9 +195,10 @@ describe('streaming through the runtime', () => {
     expect(server.requests[0]).toMatchObject({
       max_tokens: 1_024,
       temperature: 0.3,
-      stop_sequences: ['STOP'],
+      stop: ['STOP'],
     })
-    expect('thinking' in (server.requests[0] as object)).toBe(false)
+    // session titles run at the smallest reasoning effort
+    expect((server.requests[0] as { reasoning_effort?: string }).reasoning_effort).toBe('low')
   })
 })
 
@@ -277,7 +278,7 @@ describe('failure mapping', () => {
     const ctx = await harness(server.url)
     await ctx.credentials.set(KEY_REF, 'stored-key')
     await assemble(ctx, { model: 'glm-5.2', messages: [user('hi')] })
-    expect(server.headers[0]?.['x-api-key']).toBe('stored-key')
+    expect(server.headers[0]?.['authorization']).toBe('Bearer stored-key')
   })
 })
 
@@ -379,9 +380,11 @@ describe('models and discovery', () => {
 
   it('resolves catalog models with their exact capacities', async () => {
     const adapter = adapterOf({
-      models: [{ id: 'deepseek-v4-flash', name: 'DSv4F', description: 'Flagship speed', contextWindow: 1_000_000, maxTokens: 393_216 }],
+      models: [
+        { id: 'deepseek-v4-flash', name: 'DSv4F', description: 'Flagship speed', contextWindow: 1_000_000, maxTokens: 393_216 },
+        { id: 'glm-5.2' },
+      ],
       reasoningEffort: 'max',
-      effortBudgets: { max: 32_768 },
     })
     await expect(adapter.resolveModel(PROVIDER, 'deepseek-v4-flash')).resolves.toMatchObject({
       name: 'DSv4F',
@@ -389,6 +392,11 @@ describe('models and discovery', () => {
       context: { contextWindow: 1_000_000 },
       defaultMaxTokens: 393_216,
       reasoning: { defaultEffort: 'max' },
+    })
+    // A second adapter with a different configured default effort.
+    const lowDefault = adapterOf({ reasoningEffort: 'low' })
+    await expect(lowDefault.resolveModel(PROVIDER, 'glm-5.2')).resolves.toMatchObject({
+      reasoning: { defaultEffort: 'low' },
     })
   })
 
@@ -526,7 +534,7 @@ describe('models and discovery', () => {
     const discovered = await ctx.llm.discoverModels(NS, { baseURL: draft.url })
     expect(discovered).toEqual([{ id: 'draft-model' }])
     expect(stored.requests).toHaveLength(0)
-    expect(draft.modelHeaders[0]?.['x-api-key']).toBe('env-key')
+    expect(draft.modelHeaders[0]?.['authorization']).toBe('Bearer env-key')
   })
 })
 
@@ -555,7 +563,7 @@ describe('image input', () => {
         role: 'user',
         content: [
           { type: 'text', text: 'look' },
-          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: Buffer.from([1, 2, 3]).toString('base64') } },
+          { type: 'image_url', image_url: { url: `data:image/png;base64,${Buffer.from([1, 2, 3]).toString('base64')}` } },
         ],
       }],
     })
@@ -668,7 +676,7 @@ describe('ambient environment fallback', () => {
     await ctx.plugin(LlmTokener, { profiles: { tokener: { baseURL: server.url } } })
 
     await assemble(ctx, { model: 'glm-5.2', messages: [user('hi')] })
-    expect(server.headers[0]?.['x-api-key']).toBe('ambient-key')
+    expect(server.headers[0]?.['authorization']).toBe('Bearer ambient-key')
 
     vi.stubEnv('TOKENER_API_KEY', '')
     const keyless = await assemble(ctx, { model: 'glm-5.2', messages: [user('hi')] })
@@ -698,10 +706,17 @@ describe('ambient environment fallback', () => {
         }),
       ],
     })
-    const content = (server.requests[0] as { messages: Array<{ content: unknown[] }> }).messages[0]?.content
-    expect(content).toEqual([
-      { type: 'tool_result', tool_use_id: CALL, content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: Buffer.from([1, 2, 3]).toString('base64') } }] },
-      { type: 'text', text: 'and this?' },
+    const wire = (server.requests[0] as { messages: Array<{ role: string; content: unknown }> }).messages
+    expect(wire).toEqual([
+      { role: 'user', content: 'and this?' },
+      { role: 'tool', tool_call_id: 'call_img', content: '(no output)' },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Attached image(s) from tool result:' },
+          { type: 'image_url', image_url: { url: `data:image/png;base64,${Buffer.from([1, 2, 3]).toString('base64')}` } },
+        ],
+      },
     ])
   })
 

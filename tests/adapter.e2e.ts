@@ -72,24 +72,23 @@ describe.skipIf(key === undefined || key.length === 0)('live tokener gateway', (
     }
   }, 120_000)
 
-  it('lists the live model catalog and resolves metadata', async () => {
+  it('fetches the live gateway listing and resolves model metadata', async () => {
     const adapter = new LlmTokener.TokenerAdapter({
       options: () => resolveAdapterOptions({}),
       resolveApiKey: () => Promise.resolve(key as string),
     })
-    const models = await adapter.listModels(PROVIDER)
-    expect(models.length).toBeGreaterThan(0)
-    for (const entry of models) {
-      expect(entry.provider).toBe(PROVIDER)
-      expect(entry.id.length).toBeGreaterThan(0)
-      expect(entry.inputModalities).toEqual(['text'])
-    }
+    // live discovery (the "Fetch available models" path)
+    const entries = await LlmTokener.fetchModelEntries(LlmTokener.PUBLIC_BASE_URL, key as string)
+    expect(entries.length).toBeGreaterThan(0)
+
+    // the selector contract: the configured catalog (empty by default)
+    await expect(adapter.listModels(PROVIDER)).resolves.toEqual([])
 
     await expect(adapter.resolveModel(PROVIDER, model)).resolves.toMatchObject({
       provider: PROVIDER,
       id: model,
       context: { contextWindow: 200_000 },
-      reasoning: { efforts: [{ id: 'off' }, { id: 'extended' }] },
+      reasoning: { efforts: [{ id: 'off' }, { id: 'low' }, { id: 'high' }, { id: 'max' }] },
     })
   }, 60_000)
 })

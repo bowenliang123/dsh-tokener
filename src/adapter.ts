@@ -1,14 +1,16 @@
 /**
- * `TokenerAdapter`: fetch + SSE against the Tokener gateway's Anthropic
- * Messages endpoint, emitting harness StreamChunks. The adapter is
+ * `TokenerAdapter`: fetch + SSE against Tokener's OpenAI-compatible
+ * chat-completions endpoint, emitting harness StreamChunks. The adapter is
  * transport-only: connection facts arrive through a thunk resolved once per
- * operation and the API key through a per-request resolver, so the
+ * operation and the bearer token through a per-request resolver, so the
  * registering plugin owns validation, layering, and credential policy.
+ * Structurally a sibling of the harness's own DeepSeek adapter — same wire
+ * dialect, same layering — pointed at the Tokener gateway.
  *
  * @module dsh-tokener/adapter
  */
 
-import { attributionHeaders, contentHasImage, LlmAdapter, LlmError, ProviderRequestId, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { attributionHeaders, contentHasImage, isContextWindowExceededError, isQuotaExceededError, LlmAdapter, LlmError, ProviderRequestId, QUOTA_EXCEEDED_CODE, CONTEXT_WINDOW_EXCEEDED_CODE, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type {
   ContentBlock,
   GenerateOptions,
@@ -22,17 +24,17 @@ import type {
   ResolvedRetryPolicy,
   StreamChunk,
 } from '@deepseek-ai/dsh-llm'
-import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
 import type { AttachmentStore, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { parseSse } from './sse.ts'
-import { httpErrorCode, translate } from './translate.ts'
-import { DEFAULT_EFFORT_BUDGETS, serializeRequest } from './serialize.ts'
-import type { ImageSerializationOptions, ReasoningEffort, RequestDefaults } from './serialize.ts'
+import { translate } from './translate.ts'
+import { serializeRequest } from './serialize.ts'
+import type { ImageSerializationOptions, RequestDefaults } from './serialize.ts'
 import type { TokenerCatalogModel } from './catalog.ts'
 import type { WireError, WireModelEntry, WireRequest } from './types.ts'
 
-/** Default per-request output cap; the Anthropic protocol requires max_tokens on every call. */
+/** Default per-request output cap; explicit request values win. */
 export const DEFAULT_MAX_TOKENS = 16_384
 /** Default combined request/response context capacity (the gateway's own unrecognized-model default). */
 export const DEFAULT_CONTEXT_WINDOW = 200_000
@@ -48,42 +50,46 @@ export const PUBLIC_BASE_URL = 'https://api.tokener.dev/v1'
 const STREAM_IDLE_TIMEOUT_CODE = 'LLM_STREAM_IDLE_TIMEOUT'
 
 const OFF_REASONING_EFFORT = ReasoningEffortId('off')
+const LOW_REASONING_EFFORT = ReasoningEffortId('low')
+const HIGH_REASONING_EFFORT = ReasoningEffortId('high')
+const MAX_REASONING_EFFORT = ReasoningEffortId('max')
 const TEXT_MODALITIES: readonly ModelModality[] = ['text']
 
-/** The non-off effort tiers, in selector display order. */
-const EFFORT_TIERS = ['low', 'medium', 'high', 'max'] as const
-
-const EFFORT_LABELS: Record<(typeof EFFORT_TIERS)[number], string> = {
-  low: 'Low',
-  medium: 'Medium',
-  high: 'High',
-  max: 'Max',
-}
-
 /**
- * The selector metadata for one connection: off plus one budget-backed tier
- * per non-off effort, described with the budget the connection actually
- * sends (its override, or the default tier).
+ * Selectable reasoning efforts — the same vocabulary and copy the harness's
+ * own DeepSeek adapter declares, mapped on the wire to `reasoning_effort`.
  */
 function effortInfoFor(defaults: RequestDefaults): LlmModelReasoningInfo {
-  const tierBudget = (tier: Exclude<ReasoningEffort, 'off'>): number =>
-    defaults.effortBudgets?.[tier] ?? DEFAULT_EFFORT_BUDGETS[tier]
   return {
     efforts: [
       {
         id: OFF_REASONING_EFFORT,
         name: 'Off',
-        description: 'Send no thinking parameter; the gateway model uses its own default.',
+        description: 'Use for simple tasks that do not need reasoning.',
       },
-      ...EFFORT_TIERS.map(tier => ({
-        id: ReasoningEffortId(tier),
-        name: EFFORT_LABELS[tier],
-        description: `Thinking enabled with a ${tierBudget(tier).toLocaleString('en-US')}-token budget.`,
-      })),
+      {
+        id: LOW_REASONING_EFFORT,
+        name: 'Low',
+        description: 'Prefer for routine or latency-sensitive tasks.',
+      },
+      {
+        id: HIGH_REASONING_EFFORT,
+        name: 'High',
+        description: 'The default balance for most tasks.',
+      },
+      {
+        id: MAX_REASONING_EFFORT,
+        name: 'Max',
+        description: 'Reserve for the hardest quality-first tasks.',
+      },
     ],
-    defaultEffort: defaults.reasoningEffort === undefined
-      ? OFF_REASONING_EFFORT
-      : ReasoningEffortId(defaults.reasoningEffort),
+    defaultEffort: defaults.reasoningEffort === 'low'
+      ? LOW_REASONING_EFFORT
+      : defaults.reasoningEffort === 'high'
+        ? HIGH_REASONING_EFFORT
+        : defaults.reasoningEffort === 'max'
+          ? MAX_REASONING_EFFORT
+          : OFF_REASONING_EFFORT,
   }
 }
 
@@ -109,7 +115,7 @@ export interface TokenerAdapterOptions {
  * request without re-registration.
  */
 export interface TokenerConnectionOptions {
-  /** Endpoint base; `/messages` and `/models` are appended. */
+  /** Endpoint base; `/chat/completions` and `/models` are appended. */
   baseURL: string
   /**
    * Credential reference of this same resolution, resolved per request.
@@ -117,7 +123,7 @@ export interface TokenerConnectionOptions {
    * generation's URL with another generation's secret.
    */
   apiKeyEnv: CredentialRef
-  /** Request defaults applied to every call (thinking effort, budget). */
+  /** Request defaults applied to every call (thinking effort). */
   defaults: RequestDefaults
   /** Default per-request output cap; explicit request values win. */
   maxTokens: number
@@ -161,15 +167,14 @@ function providerRetryAfterMs(value: string | null): number | undefined {
 }
 
 function requestId(headers: Headers): ReturnType<typeof ProviderRequestId> | undefined {
-  const value = headers.get('request-id') ?? headers.get('x-request-id')
+  const value = headers.get('x-request-id') ?? headers.get('request-id')
   return value === null || value.length === 0 ? undefined : ProviderRequestId(value)
 }
 
-/** Headers every Tokener request sends: canonical Anthropic auth plus harness attribution. */
+/** Headers every Tokener request sends: bearer auth plus harness attribution. */
 function requestHeaders(apiKey: string): Record<string, string> {
   return {
-    'x-api-key': apiKey,
-    'anthropic-version': '2023-06-01',
+    'authorization': `Bearer ${apiKey}`,
     'content-type': 'application/json',
     'accept': 'text/event-stream',
     ...attributionHeaders(),
@@ -237,12 +242,33 @@ async function responseError(response: Response, label: string): Promise<LlmErro
   }
   const delay = providerRetryAfterMs(response.headers.get('retry-after'))
   const id = requestId(response.headers)
-  return new LlmError(message, httpErrorCode(response.status, wireError), {
+  return new LlmError(message, httpErrorCode(response.status, wireError?.error), {
     cause: new Error(rawResponse.length > 0 ? rawResponse : `Tokener HTTP ${response.status}`),
     status: response.status,
     ...delay === undefined ? {} : { providerRetryAfterMs: delay },
     ...id === undefined ? {} : { requestId: id },
   })
+}
+
+/**
+ * Map an HTTP status to a stable LlmError code.
+ * @param status - status of a non-2xx provider response.
+ * @param error - parsed provider error body, when available.
+ * @returns the normalized harness error code.
+ */
+export function httpErrorCode(status: number, error?: { type?: string; message?: string }): string {
+  if (status === 401 || status === 403) return 'AUTH'
+  if (status === 413) return 'INVALID_REQUEST'
+  const detail = [error?.type, error?.message].filter(Boolean).join(' ')
+  if (isQuotaExceededError(detail)) return QUOTA_EXCEEDED_CODE
+  if (status === 429) return 'RATE_LIMIT'
+  if (status === 400) {
+    if (isContextWindowExceededError(detail)) return CONTEXT_WINDOW_EXCEEDED_CODE
+    return 'INVALID_REQUEST'
+  }
+  if (status === 404) return 'INVALID_REQUEST'
+  if (status >= 500) return 'SERVER'
+  return `HTTP_${status}`
 }
 
 /**
@@ -424,7 +450,7 @@ export class TokenerAdapter extends LlmAdapter {
     const payload = JSON.stringify(body)
     let response: Response
     try {
-      response = await fetch(`${connection.baseURL}/messages`, {
+      response = await fetch(`${connection.baseURL}/chat/completions`, {
         method: 'POST',
         headers: requestHeaders(apiKey),
         body: payload,
