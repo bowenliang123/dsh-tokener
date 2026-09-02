@@ -104,8 +104,8 @@ describe('plugin registration', () => {
   })
 
   it('fails at composition when the entry config cannot resolve', async () => {
-    await expect(harness('http://127.0.0.1:1', { maxTokens: 4_096, thinkingBudgetTokens: 4_096 }))
-      .rejects.toThrow(/thinkingBudgetTokens must stay below maxTokens/)
+    await expect(harness('http://127.0.0.1:1', { baseURL: '' }))
+      .rejects.toThrow(/baseURL must be a non-empty string/)
   })
 
   it('registers the tokener route, its directory entry, and model discovery', async () => {
@@ -172,7 +172,7 @@ describe('streaming through the runtime', () => {
 
   it('materializes the configured default max_tokens and thinking budget', async () => {
     const server = await mockServer([{ kind: 'sse', events: textEvents }])
-    const ctx = await harness(server.url, { reasoningEffort: 'extended', thinkingBudgetTokens: 2_048 })
+    const ctx = await harness(server.url, { reasoningEffort: 'high', effortBudgets: { high: 2_048 } })
 
     await assemble(ctx, { model: 'glm-5.2', messages: [user('hi')] })
     expect(server.requests[0]).toMatchObject({
@@ -300,14 +300,14 @@ describe('dynamic configuration', () => {
     const serverA = await mockServer([{ kind: 'sse', events: textEvents }, { kind: 'sse', events: textEvents }])
     const ctx = await harness(serverA.url)
 
-    // The settings schema accepts both bounds, but the resolve step refuses a
-    // thinking budget at or above the output cap: the snapshot fails where it
-    // is read, the previous facts keep serving, and the failure is logged.
-    await ctx.settings.update(NS, { profiles: { tokener: { maxTokens: 4_096, thinkingBudgetTokens: 4_096 } } })
+    // The settings schema accepts an empty baseURL, but the resolve step
+    // refuses it: the snapshot fails where it is read, the previous facts
+    // keep serving, and the failure is logged.
+    await ctx.settings.update(NS, { profiles: { tokener: { baseURL: '' } } })
     await assemble(ctx, { model: 'glm-5.2', messages: [user('hi')] })
     expect(serverA.requests).toHaveLength(1)
 
-    await ctx.settings.update(NS, {})
+    await ctx.settings.update(NS, { profiles: { tokener: { baseURL: serverA.url } } })
     await assemble(ctx, { model: 'glm-5.2', messages: [user('hi')] })
     expect(serverA.requests).toHaveLength(2)
   })
@@ -380,15 +380,15 @@ describe('models and discovery', () => {
   it('resolves catalog models with their exact capacities', async () => {
     const adapter = adapterOf({
       models: [{ id: 'deepseek-v4-flash', name: 'DSv4F', description: 'Flagship speed', contextWindow: 1_000_000, maxTokens: 393_216 }],
-      reasoningEffort: 'extended',
-      thinkingBudgetTokens: 4_096,
+      reasoningEffort: 'max',
+      effortBudgets: { max: 32_768 },
     })
     await expect(adapter.resolveModel(PROVIDER, 'deepseek-v4-flash')).resolves.toMatchObject({
       name: 'DSv4F',
       description: 'Flagship speed',
       context: { contextWindow: 1_000_000 },
       defaultMaxTokens: 393_216,
-      reasoning: { defaultEffort: 'extended' },
+      reasoning: { defaultEffort: 'max' },
     })
   })
 

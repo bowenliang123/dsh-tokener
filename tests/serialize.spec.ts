@@ -4,7 +4,7 @@ import type { ContentBlock, GenerateOptions, ToolCallId } from '@deepseek-ai/dsh
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { AttachmentId, ImageVariantId } from '@deepseek-ai/dsh-attachment'
 import type { ImageAttachmentRef, RequestImageAttachment } from '@deepseek-ai/dsh-attachment'
-import { DEFAULT_THINKING_BUDGET_TOKENS, MIN_THINKING_BUDGET_TOKENS, resolveThinking, serializeMessages, serializeRequest } from '../src/serialize.ts'
+import { DEFAULT_EFFORT_BUDGETS, resolveThinking, serializeMessages, serializeRequest } from '../src/serialize.ts'
 import type { RequestDefaults } from '../src/serialize.ts'
 
 const imageRef: ImageAttachmentRef = {
@@ -198,21 +198,34 @@ describe('resolveThinking', () => {
 
   it('stays off by default and for session titles', () => {
     expect(resolveThinking({ ...base }, {})).toBeUndefined()
-    expect(resolveThinking({ ...base, reasoningEffort: ReasoningEffortId('extended') }, { reasoningEffort: 'extended' }))
-      .toEqual({ type: 'enabled', budget_tokens: DEFAULT_THINKING_BUDGET_TOKENS })
+    // tier budget 49,152 clamps under the 16,384 max_tokens with 1,024 headroom
+    expect(resolveThinking({ ...base, reasoningEffort: ReasoningEffortId('max') }, { reasoningEffort: 'max' }))
+      .toEqual({ type: 'enabled', budget_tokens: 15_360 })
     expect(resolveThinking({
       purpose: 'session-title',
-      reasoningEffort: ReasoningEffortId('extended'),
+      reasoningEffort: ReasoningEffortId('max'),
       maxTokens: 16_384,
     }, {})).toBeUndefined()
   })
 
-  it('honors the configured budget and rejects a budget at or above max_tokens', () => {
-    expect(resolveThinking({ ...base }, { reasoningEffort: 'extended', thinkingBudgetTokens: 4_096 }))
+  it('sends the tier budget unclamped when the request names no max_tokens', () => {
+    expect(resolveThinking(
+      { purpose: undefined, reasoningEffort: ReasoningEffortId('medium') },
+      { reasoningEffort: 'medium' },
+    )).toEqual({ type: 'enabled', budget_tokens: DEFAULT_EFFORT_BUDGETS.medium })
+  })
+
+  it('maps each tier to its budget and clamps under max_tokens with headroom', () => {
+    expect(resolveThinking({ ...base }, { reasoningEffort: 'low', effortBudgets: { low: 4_096 } }))
       .toEqual({ type: 'enabled', budget_tokens: 4_096 })
+    // tier budget 4,096 clamps to max_tokens 2,048 minus the 1,024 headroom
+    expect(resolveThinking(
+      { purpose: undefined, reasoningEffort: ReasoningEffortId('low'), maxTokens: 2_048 },
+      { reasoningEffort: 'low', effortBudgets: { low: 4_096 } },
+    )).toEqual({ type: 'enabled', budget_tokens: 1_024 })
     expect(() => resolveThinking(
-      { purpose: undefined, reasoningEffort: ReasoningEffortId('extended'), maxTokens: MIN_THINKING_BUDGET_TOKENS },
-      { thinkingBudgetTokens: MIN_THINKING_BUDGET_TOKENS },
+      { purpose: undefined, reasoningEffort: ReasoningEffortId('low'), maxTokens: 1_024 },
+      { effortBudgets: { low: 4_096 } },
     )).toThrow(LlmError)
   })
 })
@@ -258,7 +271,7 @@ describe('serializeRequest', () => {
     const plain = await serializeRequest(options)
     expect(plain.thinking).toBeUndefined()
     expect(plain.system).toBeUndefined()
-    const extended = await serializeRequest(options, { reasoningEffort: 'extended', thinkingBudgetTokens: 2_048 })
+    const extended = await serializeRequest(options, { reasoningEffort: 'high', effortBudgets: { high: 2_048 } })
     expect(extended.thinking).toEqual({ type: 'enabled', budget_tokens: 2_048 })
   })
 
@@ -273,7 +286,7 @@ describe('serializeRequest', () => {
 
 describe('request defaults type', () => {
   it('documents the effort vocabulary', () => {
-    const defaults: RequestDefaults = { reasoningEffort: 'off', thinkingBudgetTokens: 1_024 }
+    const defaults: RequestDefaults = { reasoningEffort: 'off', effortBudgets: { low: 1_024 } }
     expect(defaults.reasoningEffort).toBe('off')
   })
 })

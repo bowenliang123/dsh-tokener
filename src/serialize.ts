@@ -15,11 +15,25 @@ import type { WireContentBlock, WireMessage, WireRequest, WireThinking, WireTool
 
 /** Adapter-level request defaults (from plugin config). */
 export interface RequestDefaults {
-  /** Thinking-channel effort; `extended` enables the gateway's thinking with a token budget. */
-  reasoningEffort?: 'off' | 'extended' | undefined
-  /** Budget for `thinking: {type: 'enabled'}` when the effort is `extended`. */
-  thinkingBudgetTokens?: number | undefined
+  /** Default thinking effort for calls that name none. */
+  reasoningEffort?: ReasoningEffort | undefined
+  /** Budget override per non-off effort; missing tiers fall back to {@link DEFAULT_EFFORT_BUDGETS}. */
+  effortBudgets?: Partial<Record<Exclude<ReasoningEffort, 'off'>, number>> | undefined
 }
+
+/** The selectable thinking-effort vocabulary this adapter exposes. */
+export type ReasoningEffort = 'off' | 'low' | 'medium' | 'high' | 'max'
+
+/** Default thinking budget per effort tier (protocol floor is 1,024). */
+export const DEFAULT_EFFORT_BUDGETS: Record<Exclude<ReasoningEffort, 'off'>, number> = {
+  low: 4_096,
+  medium: 12_288,
+  high: 24_576,
+  max: 49_152,
+}
+
+/** Headroom kept for visible output when a budget is clamped under max_tokens. */
+const BUDGET_HEADROOM_TOKENS = 1_024
 
 /** Prepared request images, keyed by durable attachment id. Present only when the request carries images. */
 export interface ImageSerializationOptions {
@@ -38,7 +52,17 @@ const EMPTY_TOOL_OUTPUT = '(no output)'
 /** Text substituted when an assistant turn has no wire-representable content left. */
 const EMPTY_ASSISTANT_TEXT = '(empty response)'
 
-/** Resolve the thinking-channel control for one request. */
+/**
+ * Resolve the thinking-channel control for one request.
+ *
+ * `off` (or no effort) sends no thinking parameter — the gateway model keeps
+ * its own default. Every other tier sends `thinking: {type: 'enabled'}` with
+ * the tier's budget, clamped under `max_tokens` so the protocol constraint
+ * (budget strictly below max_tokens, plus headroom for visible output) holds
+ * no matter how large the tier is configured. Tokener's own docs define no
+ * effort parameter at all, so tiers are Anthropic-standard expressions of
+ * intent: honored natively by Anthropic upstreams, advisory elsewhere.
+ */
 export function resolveThinking(
   options: Pick<GenerateOptions, 'reasoningEffort' | 'purpose' | 'maxTokens'>,
   defaults: RequestDefaults,
@@ -46,12 +70,18 @@ export function resolveThinking(
   // Auxiliary short answers never need the thinking channel, even when the
   // model default or the effort selection would enable it.
   if (options.purpose === 'session-title') return undefined
-  const effort = options.reasoningEffort ?? defaults.reasoningEffort
-  if (effort !== 'extended') return undefined
-  const budget = defaults.thinkingBudgetTokens ?? DEFAULT_THINKING_BUDGET_TOKENS
-  if (options.maxTokens !== undefined && options.maxTokens <= budget) {
+  // The branded wire id and the config union share one spelling.
+  const effort = (options.reasoningEffort ?? defaults.reasoningEffort) as ReasoningEffort | undefined
+  if (effort === undefined || effort === 'off') return undefined
+  const tierBudget = defaults.effortBudgets?.[effort] ?? DEFAULT_EFFORT_BUDGETS[effort]
+  if (options.maxTokens === undefined) {
+    return { type: 'enabled', budget_tokens: tierBudget }
+  }
+  const budget = Math.min(tierBudget, options.maxTokens - BUDGET_HEADROOM_TOKENS)
+  if (budget < MIN_THINKING_BUDGET_TOKENS) {
     throw new LlmError(
-      `thinking budget ${budget} tokens requires max_tokens above it, got ${options.maxTokens}`,
+      `thinking effort "${effort}" needs budget_tokens of at least ${MIN_THINKING_BUDGET_TOKENS},`
+        + ` but max_tokens ${options.maxTokens} leaves no room for it`,
       'INVALID_REQUEST',
     )
   }

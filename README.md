@@ -43,7 +43,7 @@ Point the default model at the new route and start:
 ## What you get
 
 - **Anthropic Messages streaming** — `message_start` / `content_block_*` / `message_delta` / `message_stop` SSE events map onto the harness `StreamChunk` protocol: text deltas, reasoning deltas, tool-call argument deltas, usage, and finish reasons (`end_turn` → `stop`, `tool_use` → `tool-calls`, `max_tokens` → `max-tokens`).
-- **Reasoning (thinking) channel** — the `extended` reasoning effort sends `thinking: {type: 'enabled', budget_tokens}`; `off` (the default) sends no thinking parameter and leaves the model's own default untouched. Gateway thinking blocks that stream empty never materialize as empty harness blocks.
+- **Reasoning (thinking) channel** — five effort levels (`off` / `low` / `medium` / `high` / `max`); every non-off level sends `thinking: {type: 'enabled', budget_tokens}` with its tier's budget (4,096 / 12,288 / 24,576 / 49,152 by default, each clamped under `max_tokens`). Tokener's docs define no effort parameter — the tiers are Anthropic-standard expressions of intent: honored natively by Anthropic upstreams, advisory elsewhere. Gateway thinking blocks that stream empty never materialize as empty harness blocks.
 - **Tool use** — harness `ToolSchema` maps to Anthropic `tools` with `input_schema`; tool results replay as `tool_result` blocks (with `is_error`, and images inside tool results included); arguments stay raw JSON end to end.
 - **Images** — with a vision-capable catalog entry (`inputModalities: [text, image]`), durable attachments resolve to inline base64 image blocks through the attachment service. Text-only models keep the harness's own text projection.
 - **Live model discovery** — `listModels` reads `GET /models`; the advisory `models` catalog names models, corrects capacities, and declares image input. The web Models page can interrogate draft endpoints through registered model discovery.
@@ -56,8 +56,8 @@ Point the default model at the new route and start:
 |---|---|---|
 | `apiKeyEnv` | `TOKENER_API_KEY` | Credential reference (environment variable name), resolved per request. |
 | `baseURL` | `https://api.tokener.dev/v1` | Endpoint base; `/messages` and `/models` are appended. |
-| `reasoningEffort` | `off` | Default effort: `off` sends nothing; `extended` enables the thinking channel. |
-| `thinkingBudgetTokens` | `8192` | Budget for `extended`; must stay below `maxTokens` (protocol floor 1024). |
+| `reasoningEffort` | `off` | Default effort: `off` sends nothing; `low`/`medium`/`high`/`max` enable the thinking channel. |
+| `effortBudgets` | `4096/12288/24576/49152` | Per-tier thinking budget overrides (tokens; floor 1024). A tier larger than `maxTokens` is clamped at request time. |
 | `maxTokens` | `16384` | Default per-request output cap (the protocol requires `max_tokens`). |
 | `defaultContextWindow` | `200000` | Context capacity for models without an exact value. |
 | `models` | `[]` | Advisory catalog merged over live discovery. |

@@ -27,8 +27,8 @@ import type { AttachmentStore, ImageAttachmentRef } from '@deepseek-ai/dsh-attac
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { parseSse } from './sse.ts'
 import { httpErrorCode, translate } from './translate.ts'
-import { serializeRequest } from './serialize.ts'
-import type { ImageSerializationOptions, RequestDefaults } from './serialize.ts'
+import { DEFAULT_EFFORT_BUDGETS, serializeRequest } from './serialize.ts'
+import type { ImageSerializationOptions, ReasoningEffort, RequestDefaults } from './serialize.ts'
 import type { TokenerCatalogModel } from './catalog.ts'
 import type { WireError, WireModelEntry, WireRequest } from './types.ts'
 
@@ -48,24 +48,43 @@ export const PUBLIC_BASE_URL = 'https://api.tokener.dev/v1'
 const STREAM_IDLE_TIMEOUT_CODE = 'LLM_STREAM_IDLE_TIMEOUT'
 
 const OFF_REASONING_EFFORT = ReasoningEffortId('off')
-const EXTENDED_REASONING_EFFORT = ReasoningEffortId('extended')
 const TEXT_MODALITIES: readonly ModelModality[] = ['text']
 
-/** Selectable reasoning efforts: the protocol has one thinking channel with a budget. */
-const REASONING_INFO: LlmModelReasoningInfo = {
-  efforts: [
-    {
-      id: OFF_REASONING_EFFORT,
-      name: 'Off',
-      description: 'Send no thinking parameter; the gateway model uses its own default.',
-    },
-    {
-      id: EXTENDED_REASONING_EFFORT,
-      name: 'Extended',
-      description: 'Enable the thinking channel with a token budget.',
-    },
-  ],
-  defaultEffort: OFF_REASONING_EFFORT,
+/** The non-off effort tiers, in selector display order. */
+const EFFORT_TIERS = ['low', 'medium', 'high', 'max'] as const
+
+const EFFORT_LABELS: Record<(typeof EFFORT_TIERS)[number], string> = {
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  max: 'Max',
+}
+
+/**
+ * The selector metadata for one connection: off plus one budget-backed tier
+ * per non-off effort, described with the budget the connection actually
+ * sends (its override, or the default tier).
+ */
+function effortInfoFor(defaults: RequestDefaults): LlmModelReasoningInfo {
+  const tierBudget = (tier: Exclude<ReasoningEffort, 'off'>): number =>
+    defaults.effortBudgets?.[tier] ?? DEFAULT_EFFORT_BUDGETS[tier]
+  return {
+    efforts: [
+      {
+        id: OFF_REASONING_EFFORT,
+        name: 'Off',
+        description: 'Send no thinking parameter; the gateway model uses its own default.',
+      },
+      ...EFFORT_TIERS.map(tier => ({
+        id: ReasoningEffortId(tier),
+        name: EFFORT_LABELS[tier],
+        description: `Thinking enabled with a ${tierBudget(tier).toLocaleString('en-US')}-token budget.`,
+      })),
+    ],
+    defaultEffort: defaults.reasoningEffort === undefined
+      ? OFF_REASONING_EFFORT
+      : ReasoningEffortId(defaults.reasoningEffort),
+  }
 }
 
 /** Dependencies the adapter resolves per operation; the plugin owns the policy. */
@@ -287,13 +306,10 @@ export class TokenerAdapter extends LlmAdapter {
       context: { contextWindow: configured?.contextWindow ?? connection.defaultContextWindow },
       defaultMaxTokens: configured?.maxTokens ?? connection.maxTokens,
       reasoning: {
-        ...REASONING_INFO,
         // The registry validates caller efforts against this list and
         // materializes the default when a caller names none, so the
         // configured effort reaches the wire on every ordinary call.
-        defaultEffort: connection.defaults.reasoningEffort === 'extended'
-          ? EXTENDED_REASONING_EFFORT
-          : OFF_REASONING_EFFORT,
+        ...effortInfoFor(connection.defaults),
       },
     }
   }
