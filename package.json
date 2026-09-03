@@ -1,6 +1,6 @@
 {
   "name": "dsh-tokener",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Tokener.ai gateway LLM adapter speaking the OpenAI-compatible chat-completions dialect for the DeepSeek Harness LLM seam",
   "author": "bowenliang123",
   "repository": {
