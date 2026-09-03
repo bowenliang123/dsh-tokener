@@ -20,10 +20,9 @@ jobs:
           node-version: 24
           cache: pnpm
           registry-url: https://registry.npmjs.org
+      # The package is a bundle patch only; the frozen install verifies the
+      # lockfile matches the manifest before publishing it.
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run lint
-      - run: pnpm run test
-      - run: pnpm run build
       - name: Check the tag matches the package version
         run: test "v$(node -p "require('./package.json').version")" = "${GITHUB_REF_NAME}"
       - run: npm publish

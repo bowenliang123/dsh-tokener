@@ -1,5 +1,90 @@
-# Bundle patch layer: loads this package's main entry as a plain Cordis
-# plugin registering the `tokener` provider route on ctx.llm.
-- insert:
-    - id: llm-tokener
-      name: dsh-tokener
+# The dsh-tokener bundle patch: pin the Tokener gateway (https://www.tokener.dev)
+# as one ready-to-configure provider route on the llm-pi-ai adapter, so the web
+# Models page renders its standard editor for the route — API key, base URL, and
+# model catalog — exactly as it does for the shipped catalog providers.
+#
+# The patch inserts nothing of its own: it addresses the `llm-pi-ai` row the
+# dsh-base bundle inserted by id, and the `name` field guards against targeting
+# a renamed row. On a profile without that row the loader skips the patch with
+# a warning; declare the route by hand instead (Models page → Add a custom
+# provider) with the values below.
+#
+# The route lives in the composition `base` layer of the llm-pi-ai settings
+# section, so it behaves like a shipped provider: the Models page edits it
+# through user-layer overrides, the row shows no remove button while this
+# plugin is installed, and removing the plugin removes the route. The API key
+# is stored under `TOKENER_API_KEY` through the credentials service; exporting
+# that variable in the launching environment works too.
+
+- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    providers:
+      tokener:
+        displayName: Tokener
+        apiKeyEnv: TOKENER_API_KEY
+        api: openai-completions
+        baseURL: https://api.tokener.dev/v1
+        # The gateway is OpenAI-compatible but not OpenAI: it caps output via
+        # `max_tokens` (not `max_completion_tokens`) and takes system prompts
+        # as `role: "system"` (not the reasoning-era `developer` role).
+        compat:
+          supportsDeveloperRole: false
+          maxTokensField: max_tokens
+        models:
+          # The gateway's live listing refreshes or replaces this catalog at
+          # any time (Models page → Fetch available models). Capacities come
+          # from the gateway's published 1M shared context window; `maxTokens`
+          # is left to the adapter default until the gateway publishes
+          # per-model output caps. Every listed model is a reasoning model, so
+          # each declares exactly the levels the gateway accepts: `off` sends
+          # nothing, the rest travel verbatim as `reasoning_effort`.
+          - id: deepseek-v4-flash
+            contextWindow: 1000000
+            reasoningEfforts:
+              off:
+              low: low
+              high: high
+              max: max
+          - id: deepseek-v4-pro
+            contextWindow: 1000000
+            reasoningEfforts:
+              off:
+              low: low
+              high: high
+              max: max
+          - id: glm-5.2
+            contextWindow: 1000000
+            reasoningEfforts:
+              off:
+              low: low
+              high: high
+              max: max
+          - id: gpt-5.6-luna
+            contextWindow: 1000000
+            reasoningEfforts:
+              off:
+              low: low
+              high: high
+              max: max
+          - id: gpt-5.6-sol
+            contextWindow: 1000000
+            reasoningEfforts:
+              off:
+              low: low
+              high: high
+              max: max
+          - id: gpt-5.6-terra
+            contextWindow: 1000000
+            reasoningEfforts:
+              off:
+              low: low
+              high: high
+              max: max
+          - id: kimi-k3
+            contextWindow: 1000000
+            reasoningEfforts:
+              off:
+              low: low
+              high: high
+              max: max
