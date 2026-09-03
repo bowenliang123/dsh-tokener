@@ -67,7 +67,7 @@ export interface ModelsBehavior {
   contentType?: string
 }
 
-/** Local Anthropic Messages stand-in: replays scripted behaviors per request. */
+/** Local chat-completions stand-in: replays scripted behaviors per request. */
 export async function mockServer(
   script: Behavior[],
   models: MockModelEntry[] = [],

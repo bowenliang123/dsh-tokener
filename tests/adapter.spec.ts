@@ -481,7 +481,8 @@ describe('models and discovery', () => {
     const entries = await fetchModelEntries(server.url, 'k')
     expect(entries.map(entry => entry.id)).toEqual(['deepseek-v4-flash', 'glm-5.2', 'gpt-5.6-sol'])
 
-    // A gateway may serve the same id twice; sorting keeps both rows adjacent.
+    // Duplicate rows pass through unmerged, and the identical ids exercise the
+    // comparator's equal branch.
     const twinServer = await mockServer([], [{ id: 'same' }, { id: 'same' }])
     const twins = await fetchModelEntries(twinServer.url, 'k')
     expect(twins.map(entry => entry.id)).toEqual(['same', 'same'])

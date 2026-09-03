@@ -1,7 +1,7 @@
 {
   "name": "dsh-tokener",
   "version": "0.1.0",
-  "description": "Tokener.ai gateway LLM adapter (Anthropic Messages protocol) for the DeepSeek Harness LLM seam",
+  "description": "Tokener.ai gateway LLM adapter speaking the OpenAI-compatible chat-completions dialect for the DeepSeek Harness LLM seam",
   "author": "bowenliang123",
   "repository": {
     "type": "git",

@@ -227,7 +227,9 @@ export async function fetchModelEntries(
     if (typeof candidate.id === 'string' && candidate.id.length > 0) listed.push({ ...candidate, id: candidate.id })
   }
   // The gateway serves its listing in no useful order; every consumer below
-  // (picker, discovery) reads better with a stable alphabetical one.
+  // (picker, discovery) reads better with a stable alphabetical one. The
+  // comparison is plain code-unit order — deterministic across locales, and
+  // real gateway ids are lowercase, so uppercase weighting never bites.
   listed.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
   return listed
 }
