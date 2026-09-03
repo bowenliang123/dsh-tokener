@@ -42,3 +42,7 @@ Engineering conventions for `dsh-tokener`.
                   File                     | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s
                   -------------------------|---------|----------|---------|---------|-------------------
                   All files                |     100 |      100 |     100 |     100 |
+
+## Git
+- When asked to commit, please commit the possibly mixed changes separately for each task or purpose.
+- `gh` cli is installed and logged in.
