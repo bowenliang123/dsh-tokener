@@ -43,7 +43,6 @@ export function resolveThinking(
   const effort = options.reasoningEffort ?? defaults.reasoningEffort
   if (effort === undefined || effort === 'off') return {}
   // The harness's branded wire id shares the plain wire spelling.
-  // The harness's branded wire id shares the plain wire spelling.
   return { reasoning_effort: effort as Exclude<ReasoningEffort, 'off'> }
 }
 

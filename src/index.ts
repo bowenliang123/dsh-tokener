@@ -13,14 +13,15 @@
  * - id: llm-tokener
  *   name: dsh-tokener
  *   config:
- *     apiKeyEnv: TOKENER_API_KEY
- *     models:
- *       - id: deepseek-v4-flash
- *         contextWindow: 1000000
- *         maxTokens: 393216
- *       - id: gpt-5.6-sol
- *         contextWindow: 922000
- *         inputModalities: [text, image]
+ *     profiles:
+ *       tokener:
+ *         models:
+ *           - id: deepseek-v4-flash
+ *             contextWindow: 1000000
+ *             maxTokens: 393216
+ *           - id: gpt-5.6-sol
+ *             contextWindow: 922000
+ *             inputModalities: [text, image]
  * ```
  *
  * @module dsh-tokener

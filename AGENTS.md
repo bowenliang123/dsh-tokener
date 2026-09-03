@@ -7,21 +7,22 @@ and `docs/cookbook/adding-an-llm-adapter.md`).
 ## What this package is
 
 One single-purpose plugin: a Tokener.ai gateway LLM adapter for the
-`@deepseek-ai/dsh-llm` seam. Plugin name `llm-tokener`, provider route
+`@deepseek-ai/dsh-llm` seam, speaking the OpenAI-compatible
+chat-completions dialect the gateway serves at `/v1/chat/completions`. Plugin name `llm-tokener`, provider route
 `tokener`, npm package `dsh-tokener`.
 
 ## Layout
 
 ```
 src/
-  types.ts      # Anthropic wire vocabulary (only what this adapter sends/reads)
-  sse.ts        # SSE byte stream -> named events (eventsource-parser)
-  translate.ts  # SSE events -> harness StreamChunks (lazy block opening, usage before finish)
-  serialize.ts  # harness messages -> Anthropic wire request
+  types.ts      # OpenAI-compatible wire vocabulary (only what this adapter sends/reads)
+  sse.ts        # SSE byte stream -> data payloads, [DONE]-terminated (eventsource-parser)
+  translate.ts  # chat-completions chunks -> harness StreamChunks (usage deferred to [DONE])
+  serialize.ts  # harness messages -> OpenAI chat-completions request
   adapter.ts    # TokenerAdapter: fetch + SSE + idle watchdog + error mapping
   catalog.ts    # advisory catalog model type
   index.ts      # plugin entry: name/inject/Config/apply, credentials, settings, discovery
-tests/          # vitest specs + mock Anthropic SSE server + live e2e (self-skipping)
+tests/          # vitest specs + mock chat-completions SSE server + live e2e (self-skipping)
 ```
 
 ## Rules
@@ -35,7 +36,7 @@ tests/          # vitest specs + mock Anthropic SSE server + live e2e (self-skip
 - **Adapter contract obligations** (`dsh-llm`): every provider request carries
   `attributionHeaders()`; `usage` is emitted before `finish` and nothing after;
   tool arguments remain raw JSON end to end; block indexes follow first-opened
-  order; EOF without `message_stop` is `STREAM_CLOSED`; unsupported options fail
+  order; EOF without `[DONE]` is `STREAM_CLOSED`; unsupported options fail
   loud with a stable `LlmError` code instead of being dropped silently.
 - **Connection facts resolve per request** from one snapshot; a credential is
   only ever paired with the endpoint of the same resolution. The retry policy is

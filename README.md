@@ -22,7 +22,9 @@ or add the row to your composition by hand:
     - id: llm-tokener
       name: dsh-tokener
       config:
-        apiKeyEnv: TOKENER_API_KEY
+        profiles:
+          tokener:
+            apiKeyEnv: TOKENER_API_KEY
 ```
 
 Then export your Tokener key (or store it through the credentials seam — the web Models page writes it there):
@@ -43,23 +45,23 @@ Point the default model at the new route and start:
 ## What you get
 
 - **OpenAI-compatible streaming** — `choices[].delta` chunks (`content`, `reasoning_content`, `tool_calls`) map onto the harness `StreamChunk` protocol: text deltas, reasoning deltas, tool-call argument deltas, usage, and finish reasons (`stop` → `stop`, `tool_calls` → `tool-calls`, `length` → `max-tokens`). Truncation (EOF before `[DONE]`) fails loud with `STREAM_CLOSED`.
-- **Reasoning (thinking) channel** — the same four effort levels the harness's own DeepSeek adapter declares (`off` / `low` / `high` / `max`, default `off`). Non-off efforts send `reasoning_effort` plus `thinking: enabled` — the vocabulary the gateway accepts on this dialect; `off` sends nothing and leaves the model's own default untouched. Tokener's docs define no effort parameter, so levels are advisory on non-DeepSeek upstreams. Gateway thinking blocks that stream empty never materialize as empty harness blocks.
+- **Reasoning (thinking) channel** — the same four effort levels the harness's own DeepSeek adapter declares (`off` / `low` / `high` / `max`, default `off`). Non-off efforts send `reasoning_effort` — the one thinking-control field the gateway accepts on this dialect (the DeepSeek-dialect `thinking` field is rejected); `off` sends nothing and leaves the model's own default untouched. Tokener's docs define no effort parameter, so levels are advisory on non-DeepSeek upstreams. Gateway thinking blocks that stream empty never materialize as empty harness blocks.
 - **Tool use** — harness `ToolSchema` maps to OpenAI `tools` with JSON-schema `parameters`; tool results replay as `role: 'tool'` messages (with placeholders for empty output; images inside tool results join a following user message); arguments stay raw JSON end to end.
 - **Images** — with a vision-capable catalog entry (`inputModalities: [text, image]`), durable attachments resolve to inline base64 `image_url` parts through the attachment service. Text-only models keep the harness's own text projection.
 - **Live model discovery** — with no curated rows, the picker advertises the gateway's live `GET /models` listing (memoized for 60s); a curated `models` catalog narrows the picker to exactly its rows, naming models, correcting capacities, and declaring image input. The web Models page can also interrogate draft endpoints through registered model discovery.
 - **Per-request connection facts** — `baseURL`, catalog, and credential resolve fresh on every request (in-flight streams keep their snapshot), so a settings change reaches the next call without a restart. The one registration-captured fact — the retry policy — re-registers the route atomically when it changes.
-- **Attribution and errors** — every request carries the harness `User-Agent` and `anthropic-version` headers; HTTP statuses and Anthropic error payloads map to stable harness codes (`AUTH`, `RATE_LIMIT`, `CONTEXT_WINDOW_EXCEEDED`, …) with `retry-after` and `request-id` preserved as retry facts.
+- **Attribution and errors** — every request carries the harness `User-Agent` header; HTTP statuses and OpenAI-style error payloads map to stable harness codes (`AUTH`, `RATE_LIMIT`, `CONTEXT_WINDOW_EXCEEDED`, …) with `retry-after` and `request-id` preserved as retry facts.
 
 ## Configuration
 
 | Field | Default | Description |
 |---|---|---|
 | `apiKeyEnv` | `TOKENER_API_KEY` | Credential reference (environment variable name), resolved per request. |
-| `baseURL` | `https://api.tokener.dev/v1` | Endpoint base; `/messages` and `/models` are appended. |
+| `baseURL` | `https://api.tokener.dev/v1` | Endpoint base; `/chat/completions` and `/models` are appended. |
 | `reasoningEffort` | `off` | Default effort: `off` sends nothing; `low`/`high`/`max` send `reasoning_effort` with the thinking channel enabled. |
-| `maxTokens` | `16384` | Default per-request output cap (the protocol requires `max_tokens`). |
+| `maxTokens` | `16384` | Default per-request output cap; explicit request values win. |
 | `defaultContextWindow` | `200000` | Context capacity for models without an exact value. |
-| `models` | `[]` | Advisory catalog merged over live discovery. |
+| `models` | `[]` | Curated catalog: narrows the picker to exactly its rows. Empty (default) advertises the gateway's live listing. |
 | `streamIdleTimeoutMs` | `300000` | Maximum provider idle time during one stream read. |
 | `imageMaxPixels` / `imageMaxBytes` | `1456000` / `2000000` | Per-image budgets for request-image preparation. |
 | `retryPolicy` | normal, 5 retries | Provider-owned retry policy (`RetryPolicySchema`). |

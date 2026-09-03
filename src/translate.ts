@@ -12,7 +12,7 @@ import { brandString } from '@deepseek-ai/dsh-brand'
 import { EMPTY_RESPONSE_CODE, LlmError } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, FinishReason, StreamChunk, TokenUsage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { DONE } from './sse.ts'
-import type { WireChunk, WireToolCallDelta, WireUsage } from './types.ts'
+import type { WireChunk, WireUsage } from './types.ts'
 
 /** One open block under assembly. */
 interface OpenBlock {
@@ -215,5 +215,3 @@ export async function* translate(payloads: AsyncIterable<string>): AsyncGenerato
   throw new LlmError('SSE payload stream ended without [DONE]', 'STREAM_CLOSED')
 }
 
-/** Re-exported for tests that construct tool-call deltas. */
-export type { WireToolCallDelta }
