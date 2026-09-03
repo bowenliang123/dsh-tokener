@@ -27,20 +27,26 @@
         baseURL: https://api.tokener.dev/v1
         # The gateway is OpenAI-compatible but not OpenAI: it caps output via
         # `max_tokens` (not `max_completion_tokens`) and takes system prompts
-        # as `role: "system"` (not the reasoning-era `developer` role).
+        # as `role: "system"` (not the reasoning-era `developer` role). Its
+        # /responses and /messages endpoints answer too, but the completions
+        # dialect is the one the docs describe and these switches describe;
+        # switching the protocol in the editor is therefore refused (the
+        # switches no longer apply), which pins the verified configuration.
         compat:
           supportsDeveloperRole: false
           maxTokensField: max_tokens
         models:
           # The gateway's live listing refreshes or replaces this catalog at
-          # any time (Models page → Fetch available models). Capacities come
-          # from the gateway's published 1M shared context window; `maxTokens`
-          # is left to the adapter default until the gateway publishes
-          # per-model output caps. Every listed model is a reasoning model, so
-          # each declares exactly the levels the gateway accepts: `off` sends
+          # any time (Models page → Fetch available models). Capacities mirror
+          # the gateway's published listing (max_input_tokens as the context
+          # window, max_output_tokens as the output cap, verified 2026-09);
+          # glm-5.2 and kimi-k3 publish no output cap, so they keep the
+          # adapter default. Every listed model is a reasoning model, so each
+          # declares exactly the levels the gateway accepts: `off` sends
           # nothing, the rest travel verbatim as `reasoning_effort`.
           - id: deepseek-v4-flash
             contextWindow: 1000000
+            maxTokens: 393216
             reasoningEfforts:
               off:
               low: low
@@ -48,6 +54,7 @@
               max: max
           - id: deepseek-v4-pro
             contextWindow: 1000000
+            maxTokens: 393216
             reasoningEfforts:
               off:
               low: low
@@ -61,21 +68,24 @@
               high: high
               max: max
           - id: gpt-5.6-luna
-            contextWindow: 1000000
+            contextWindow: 922000
+            maxTokens: 128000
             reasoningEfforts:
               off:
               low: low
               high: high
               max: max
           - id: gpt-5.6-sol
-            contextWindow: 1000000
+            contextWindow: 922000
+            maxTokens: 128000
             reasoningEfforts:
               off:
               low: low
               high: high
               max: max
           - id: gpt-5.6-terra
-            contextWindow: 1000000
+            contextWindow: 922000
+            maxTokens: 128000
             reasoningEfforts:
               off:
               low: low
