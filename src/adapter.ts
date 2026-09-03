@@ -190,7 +190,7 @@ function requestHeaders(apiKey: string): Record<string, string> {
  * @param baseURL - endpoint base; `/models` is appended.
  * @param apiKey - credential for this interrogation.
  * @param signal - caller cancellation.
- * @returns advertised entries (id plus disclosed capacities) in endpoint order.
+ * @returns advertised entries (id plus disclosed capacities) sorted by model id.
  */
 export async function fetchModelEntries(
   baseURL: string,
@@ -226,6 +226,9 @@ export async function fetchModelEntries(
     const candidate = entry as WireModelEntry
     if (typeof candidate.id === 'string' && candidate.id.length > 0) listed.push({ ...candidate, id: candidate.id })
   }
+  // The gateway serves its listing in no useful order; every consumer below
+  // (picker, discovery) reads better with a stable alphabetical one.
+  listed.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
   return listed
 }
 

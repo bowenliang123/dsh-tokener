@@ -370,9 +370,10 @@ describe('models and discovery', () => {
     ])
     vi.stubEnv('TOKENER_API_KEY', 'env-key')
     const ctx = await harness(server.url)
+    // The gateway serves its listing unordered; the picker reads it sorted by id.
     await expect(ctx.llm.listModels(PROVIDER)).resolves.toEqual([
-      { provider: PROVIDER, id: 'glm-5.2', name: 'glm-5.2', inputModalities: ['text'] },
       { provider: PROVIDER, id: 'deepseek-v4-flash', name: 'deepseek-v4-flash', inputModalities: ['text'] },
+      { provider: PROVIDER, id: 'glm-5.2', name: 'glm-5.2', inputModalities: ['text'] },
     ])
     // second picker open within the TTL reuses the cached listing
     await expect(ctx.llm.listModels(PROVIDER)).resolves.toHaveLength(2)
@@ -419,10 +420,11 @@ describe('models and discovery', () => {
 
   it('interrogates draft endpoints through registered discovery', async () => {
     const server = await mockServer([], [
-      { id: 'glm-5.2' },
       { id: 'gpt-5.6-sol', max_input_tokens: 922_000, max_output_tokens: 128_000 },
+      { id: 'glm-5.2' },
     ])
     const ctx = await harness(server.url)
+    // Discovery returns the listing sorted by id regardless of endpoint order.
     await expect(ctx.llm.discoverModels(NS, { provider: PROVIDER })).resolves.toEqual([
       { id: 'glm-5.2' },
       { id: 'gpt-5.6-sol', contextWindow: 922_000, maxTokens: 128_000 },
@@ -468,6 +470,21 @@ describe('models and discovery', () => {
     } finally {
       globalThis.fetch = originalFetch
     }
+  })
+
+  it('sorts the model listing alphabetically by id', async () => {
+    const server = await mockServer([], [
+      { id: 'gpt-5.6-sol' },
+      { id: 'deepseek-v4-flash' },
+      { id: 'glm-5.2' },
+    ])
+    const entries = await fetchModelEntries(server.url, 'k')
+    expect(entries.map(entry => entry.id)).toEqual(['deepseek-v4-flash', 'glm-5.2', 'gpt-5.6-sol'])
+
+    // A gateway may serve the same id twice; sorting keeps both rows adjacent.
+    const twinServer = await mockServer([], [{ id: 'same' }, { id: 'same' }])
+    const twins = await fetchModelEntries(twinServer.url, 'k')
+    expect(twins.map(entry => entry.id)).toEqual(['same', 'same'])
   })
 
   it('wraps a body that dies mid-read and refuses a null body', async () => {
