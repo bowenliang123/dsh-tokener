@@ -1,8 +1,6 @@
 # dsh-tokener
 
-[![CI](https://github.com/bowenliang123/dsh-tokener/actions/workflows/pr-checks.yml/badge.svg)](https://github.com/bowenliang123/dsh-tokener/actions/workflows/pr-checks.yml)
 [![npm](https://img.shields.io/npm/v/dsh-tokener)](https://www.npmjs.com/package/dsh-tokener)
-[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
 
 A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plugin that registers [Tokener.ai](https://www.tokener.dev) as an LLM provider — the pre-paid model gateway speaking the **OpenAI-compatible chat-completions protocol** (`POST /v1/chat/completions`) over one uniform endpoint for models such as `deepseek-v4-flash`, `deepseek-v4-pro`, `gpt-5.6-sol`, `glm-5.2`, and `kimi-k3`.
 
