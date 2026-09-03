@@ -1,58 +1,44 @@
 # AGENTS.md
 
-Engineering conventions for `dsh-tokener`, aligned with the DeepSeek Harness
-monorepo's internal plugin rules (see deepseek-harness `docs/cookbook/adding-a-package.md`
-and `docs/cookbook/adding-an-llm-adapter.md`).
+Engineering conventions for `dsh-tokener`.
 
-## What this package is
+## Background
 
-One single-purpose plugin: a Tokener.ai gateway LLM adapter for the
-`@deepseek-ai/dsh-llm` seam, speaking the OpenAI-compatible
-chat-completions dialect the gateway serves at `/v1/chat/completions`. Plugin name `llm-tokener`, provider route
-`tokener`, npm package `dsh-tokener`.
+- DeepSeek Harness:
+    - an open-source agent harness developed by DeepSeek AI.
+    - Dive deep in to the code when you are preparing for development
+    - Github: deepseek-ai/deepseek-harness
+    - NPM: @deepseek-ai/dsh
+    - Local git clone of [dsh](https://github.com/deepseek-ai/deepseek-harness):
+        - may be found in the `~/dev/deepseek-harness` directory
+        - `git pull` on the `main` branch to update
+        - commits and tags are available for reference and comparison
+        - run `pnpm install` to update dependencies after a `git pull` or switching commit/tag
 
-## Layout
+- DeepSeek Harness Plugin:
+    - docs:
+        - Reference: https://deepseek-harness.github.io/deepseek-harness/en/reference/
 
-```
-src/
-  types.ts      # OpenAI-compatible wire vocabulary (only what this adapter sends/reads)
-  sse.ts        # SSE byte stream -> data payloads, [DONE]-terminated (eventsource-parser)
-  translate.ts  # chat-completions chunks -> harness StreamChunks (usage deferred to [DONE])
-  serialize.ts  # harness messages -> OpenAI chat-completions request
-  adapter.ts    # TokenerAdapter: fetch + SSE + idle watchdog + error mapping
-  catalog.ts    # advisory catalog model type
-  index.ts      # plugin entry: name/inject/Config/apply, credentials, settings, discovery
-tests/          # vitest specs + mock chat-completions SSE server + live e2e (self-skipping)
-```
+- Tokener.dev:
+  - A LLM provider at https://www.tokener.dev/
+  - doc: https://www.tokener.dev/docs
+  - LLM list: https://www.tokener.dev/models
 
-## Rules
-
-- **Source imports use explicit `.ts` specifiers** (`./types.ts`); `tsc` rewrites
-  them to `.js` in emitted code (`rewriteRelativeImportExtensions`).
-- **Two-stage build**: `tsc -p tsconfig.json` emits `lib/types/*.js + *.d.ts`,
-  then `tsdown` bundles `lib/types/index.js` into the single published runtime
-  artifact `lib/index.js`. Dependencies stay external. `files` ships exactly
-  `lib/index.js`, `lib/types/**/*.d.ts`, `cordis.patch.yml`, `README.md`, `LICENSE`.
-- **Adapter contract obligations** (`dsh-llm`): every provider request carries
-  `attributionHeaders()`; `usage` is emitted before `finish` and nothing after;
-  tool arguments remain raw JSON end to end; block indexes follow first-opened
-  order; EOF without `[DONE]` is `STREAM_CLOSED`; unsupported options fail
-  loud with a stable `LlmError` code instead of being dropped silently.
-- **Connection facts resolve per request** from one snapshot; a credential is
-  only ever paired with the endpoint of the same resolution. The retry policy is
-  the one registration-captured fact and re-registers via `handle.replace()`.
-- **Config** (`@deepseek-ai/schemastery`, Standard Schema) doubles as the
-  settings-section schema; `resolveAdapterOptions` re-validates every bound for
-  programmatic construction and keeps the last good facts on a bad live snapshot.
-- **Lint** is oxlint with type-aware rules (`.oxlintrc.json`); keep it at zero
-  errors. Tests target **100% per-file coverage** (statements, branches,
-  functions, lines), matching the monorepo bar; mock only the network boundary
-  (`tests/mock-server.ts`), and keep live-gateway evidence in `tests/*.e2e.ts`
-  which self-skip without `TOKENER_API_KEY`.
-
-## Verify before publishing
-
-```sh
-pnpm run verify      # lint + typecheck + covered unit tests + build
-npm pack --dry-run   # files whitelist matches the list above
-```
+## Coding
+- Always consider the minimal change and the most performance efficient implementation.
+- Try best to use the existing classes, utilities, styles, style tokens, events, presets and lifecycles provided by DeepSeek Harness.ess.
+- Use English in code comments, documentation, Pull Request description, and commit messages.
+- Smaller, less-coupling and modulized code and tests are preferred for better maintainability and testability.
+- Avoid adding unnecessary code comments (unless for the pinned major decision or for those provide significant value) and code duplication.
+- Before any commit, MUST ALWAYS do ALL the following checks:
+    - Check the to-do list, and ensure all the items are properly completed or closed.
+    - Carefully independently review and simplify all the diffs and all code changes, to ensure they are necessary, correct and not over-engineered.
+    - Cleanup the generated temporary files. Cleanup temporary or unhelpful comments.
+    - MUST Run `pnpm run lint:fix && pnpm run test && pnpm run build` in single command and capture FULL output, to ensure:
+        - passing all the linting and test
+        - the per-file code coverage MUST BE literally 100%.
+            - Example output:
+                - -------------------------|---------|----------|---------|---------|-------------------
+                  File                     | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s
+                  -------------------------|---------|----------|---------|---------|-------------------
+                  All files                |     100 |      100 |     100 |     100 |
