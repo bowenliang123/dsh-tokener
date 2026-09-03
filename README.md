@@ -14,7 +14,7 @@ dsh plugin --profile add dsh-tokener
 
 - Then open **Settings → Models**. A `Tokener` row is already listed: enter your API key and save. The key is stored in the harness credential store under `TOKENER_API_KEY`; exporting that variable in the launching environment works too.
 
-![settings](https://raw.githubusercontent.com/bowenliang123/dsh-tokener/main/docs/images/settigns.png)
+![settings](https://raw.githubusercontent.com/bowenliang123/dsh-tokener/main/doc/images/settings.png)
 
 ## License
 
