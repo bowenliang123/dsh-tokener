@@ -12,34 +12,6 @@ The adapter follows the official `dsh-llm` adapter contract (`LlmAdapter`), so D
 dsh plugin add dsh-tokener
 ```
 
-or add the row to your composition by hand:
-
-```yaml
-# cordis.patch.yml
-- insert:
-    - id: llm-tokener
-      name: dsh-tokener
-      config:
-        profiles:
-          tokener:
-            apiKeyEnv: TOKENER_API_KEY
-```
-
-Then export your Tokener key (or store it through the credentials seam — the web Models page writes it there):
-
-```sh
-export TOKENER_API_KEY=sk-...
-```
-
-Point the default model at the new route and start:
-
-```yaml
-- id: agent-default-model
-  config:
-    provider: tokener
-    model: deepseek-v4-flash
-```
-
 ## What you get
 
 - **OpenAI-compatible streaming** — `choices[].delta` chunks (`content`, `reasoning_content`, `tool_calls`) map onto the harness `StreamChunk` protocol: text deltas, reasoning deltas, tool-call argument deltas, usage, and finish reasons (`stop` → `stop`, `tool_calls` → `tool-calls`, `length` → `max-tokens`). Truncation (EOF before `[DONE]`) fails loud with `STREAM_CLOSED`.
