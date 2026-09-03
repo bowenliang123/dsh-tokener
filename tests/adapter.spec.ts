@@ -362,6 +362,23 @@ describe('dynamic configuration', () => {
 })
 
 describe('models and discovery', () => {
+  it('advertises the live gateway listing when the profile curates nothing', async () => {
+    const server = await mockServer([], [
+      { id: 'glm-5.2' },
+      { id: 'deepseek-v4-flash', max_input_tokens: 1_000_000, max_output_tokens: 393_216 },
+      { mode: 'chat' },
+    ])
+    vi.stubEnv('TOKENER_API_KEY', 'env-key')
+    const ctx = await harness(server.url)
+    await expect(ctx.llm.listModels(PROVIDER)).resolves.toEqual([
+      { provider: PROVIDER, id: 'glm-5.2', name: 'glm-5.2', inputModalities: ['text'] },
+      { provider: PROVIDER, id: 'deepseek-v4-flash', name: 'deepseek-v4-flash', inputModalities: ['text'] },
+    ])
+    // second picker open within the TTL reuses the cached listing
+    await expect(ctx.llm.listModels(PROVIDER)).resolves.toHaveLength(2)
+    expect(server.modelHeaders).toHaveLength(1)
+  })
+
   it('advertises exactly the configured catalog, without any network call', async () => {
     // The selector contract on every adapter: the stored profile list IS what
     // pickers offer. Even an unreachable endpoint must not break it.

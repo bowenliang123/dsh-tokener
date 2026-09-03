@@ -81,8 +81,10 @@ describe.skipIf(key === undefined || key.length === 0)('live tokener gateway', (
     const entries = await LlmTokener.fetchModelEntries(LlmTokener.PUBLIC_BASE_URL, key as string)
     expect(entries.length).toBeGreaterThan(0)
 
-    // the selector contract: the configured catalog (empty by default)
-    await expect(adapter.listModels(PROVIDER)).resolves.toEqual([])
+    // no curated catalog -> the picker advertises the live gateway listing
+    // (the endpoint's order is not stable; compare as sets)
+    const models = await adapter.listModels(PROVIDER)
+    expect(models.map(m => m.id).sort()).toEqual(entries.map(e => e.id).sort())
 
     await expect(adapter.resolveModel(PROVIDER, model)).resolves.toMatchObject({
       provider: PROVIDER,

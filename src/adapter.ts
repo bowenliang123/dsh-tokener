@@ -47,6 +47,9 @@ export const DEFAULT_IMAGE_MAX_BYTES = 2_000_000
 /** Public Tokener API base (models traffic only; the console never proxies LLM calls). */
 export const PUBLIC_BASE_URL = 'https://api.tokener.dev/v1'
 
+/** How long the gateway's live listing is reused across picker opens. */
+export const LIVE_CATALOG_TTL_MS = 60_000
+
 const STREAM_IDLE_TIMEOUT_CODE = 'LLM_STREAM_IDLE_TIMEOUT'
 
 const OFF_REASONING_EFFORT = ReasoningEffortId('off')
@@ -279,6 +282,13 @@ export function httpErrorCode(status: number, error?: { type?: string; message?:
  * map to `ABORTED`; the configured per-read idle watchdog maps to `TIMEOUT`.
  */
 export class TokenerAdapter extends LlmAdapter {
+  /** Short-lived cache of the gateway's live listing, keyed by endpoint. */
+  private liveCatalog?: {
+    readonly baseURL: string
+    readonly at: number
+    readonly entries: readonly (WireModelEntry & { id: string })[]
+  }
+
   constructor(private readonly config: TokenerAdapterOptions) {
     super()
   }
@@ -291,19 +301,45 @@ export class TokenerAdapter extends LlmAdapter {
     return this.config.options().retryPolicy
   }
 
-  override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
-    // The configured catalog IS the selector contract, as on every other
-    // adapter: what the profile lists is what pickers offer. The gateway's
-    // live listing is an explicit configuration-time helper (model
-    // discovery), never an implicit widening of the picker.
+  override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     const connection = this.config.options()
-    return Promise.resolve(connection.models.map(model => ({
+    // A curated profile narrows the picker to exactly its rows (the Models
+    // page's contract). With no curated rows — the fresh-install default —
+    // the picker advertises every model the key can reach on the gateway,
+    // like a pi-ai route without a models list.
+    if (connection.models.length > 0) {
+      return Promise.resolve(connection.models.map(model => ({
+        provider,
+        id: model.id,
+        name: model.name ?? model.id,
+        ...model.description === undefined ? {} : { description: model.description },
+        inputModalities: model.inputModalities ?? TEXT_MODALITIES,
+      })))
+    }
+    const apiKey = await this.config.resolveApiKey(connection)
+    const entries = await this.liveCatalogOf(connection, apiKey)
+    return entries.map(entry => ({
       provider,
-      id: model.id,
-      name: model.name ?? model.id,
-      ...model.description === undefined ? {} : { description: model.description },
-      inputModalities: model.inputModalities ?? TEXT_MODALITIES,
-    })))
+      id: entry.id,
+      name: entry.id,
+      inputModalities: TEXT_MODALITIES,
+    }))
+  }
+
+  /** The gateway's live listing, memoized briefly so picker opens stay cheap. */
+  private async liveCatalogOf(
+    connection: TokenerConnectionOptions,
+    apiKey: string,
+  ): Promise<readonly (WireModelEntry & { id: string })[]> {
+    const cached = this.liveCatalog
+    if (cached !== undefined
+      && cached.baseURL === connection.baseURL
+      && Date.now() - cached.at < LIVE_CATALOG_TTL_MS) {
+      return cached.entries
+    }
+    const entries = await fetchModelEntries(connection.baseURL, apiKey)
+    this.liveCatalog = { baseURL: connection.baseURL, at: Date.now(), entries }
+    return entries
   }
 
   override resolveModel(
