@@ -36,6 +36,7 @@
     "test": "pnpm run typecheck && vitest run --coverage",
     "test:unit": "vitest run",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "watch": "bash scripts/watch.sh",
     "verify": "pnpm run lint && pnpm run test && pnpm run build",
     "release": "npm publish"
   },
